@@ -1,0 +1,33 @@
+[project]
+name = "horseprediction"
+version = "0.1.0"
+description = "Personal JRA race analysis and prediction support MVP"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlalchemy>=2.0",
+  "alembic>=1.13",
+  "pydantic>=2.0",
+  "beautifulsoup4>=4.12",
+  "numpy>=2.0",
+  "pandas>=2.0",
+  "scikit-learn>=1.5",
+]
+
+[project.optional-dependencies]
+local = ["flask>=3.0", "pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+e2e = ["playwright>=1.45"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_configs = true

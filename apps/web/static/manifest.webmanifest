@@ -1,0 +1,9 @@
+{
+  "name": "競馬予想支援",
+  "short_name": "競馬予想",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7f6",
+  "theme_color": "#087553",
+  "icons": []
+}
