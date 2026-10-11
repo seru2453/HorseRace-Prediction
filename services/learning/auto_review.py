@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from database.repository import RaceRepository
-from database.session import make_session_factory
+from database.session import get_session_factory
 from services.data_provider.base import ProviderUnavailableError, RacingDataProvider
 from services.learning.review import PredictionReviewer
 
@@ -14,7 +14,7 @@ from services.learning.review import PredictionReviewer
 class AutomaticReviewService:
     def __init__(self, provider: RacingDataProvider, database_url: str | None = None) -> None:
         self.provider = provider
-        self.session_factory = make_session_factory(database_url)
+        self.session_factory = get_session_factory(database_url)
 
     def run_once(self, limit: int = 50, save: bool = True) -> list[dict]:
         with self.session_factory() as session:

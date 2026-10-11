@@ -1,13 +1,17 @@
 from datetime import datetime, timezone
+import logging
 
 import pytest
 
 from database.models import PredictionReview
+from database.repository import RaceRepository
 from database.session import make_session_factory
 from services.common.models import HorseFeature, PredictionData, RaceResultData, RaceResultEntryData
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.data_provider.mock import MockProvider
 from services.learning.review import PredictionReviewer
+from services.ml.artifacts import save_logistic_artifact
+from services.ml.baseline import LogisticBaselineTrainer, TrainingConfig
 from services.prediction.rule_based import RuleBasedPredictor
 
 
@@ -120,13 +124,40 @@ def test_analysis_service_does_not_apply_unpromoted_factor_challenger(tmp_path):
     )
 
 
-def test_analysis_service_saves_logistic_as_shadow_without_changing_champion(tmp_path):
+def test_analysis_does_not_rebuild_training_data_or_fit_models(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="services.app.orchestrator")
+    monkeypatch.setenv("MODEL_ARTIFACT_DIR", str(tmp_path / "models"))
+
+    def fail_training(*_args, **_kwargs):
+        raise AssertionError("training work must not run during prediction")
+
+    monkeypatch.setattr(RaceRepository, "training_dataset", fail_training)
+    monkeypatch.setattr(LogisticBaselineTrainer, "fit", fail_training)
+    service = RaceAnalysisService(provider=MockProvider(), database_url=f"sqlite:///{tmp_path}/analysis.sqlite3")
+
+    result = service.analyze(AnalysisRequest("2026-08-16", "札幌", 11, iterations=1000, save=False))
+
+    assert result.predictions
+    assert "RuleBased予測" in result.message
+    assert "logistic_predict=" in caplog.text
+    assert "training_dataset=" not in caplog.text
+
+
+def test_saved_logistic_models_are_scored_as_shadow_without_changing_champion(tmp_path, monkeypatch):
+    artifact_dir = tmp_path / "models"
+    monkeypatch.setenv("MODEL_ARTIFACT_DIR", str(artifact_dir))
+    dataset = {"rows": _training_rows_for_blend(target_rows=False)}
+    for target in ("actual_win", "actual_top3"):
+        trainer = LogisticBaselineTrainer(TrainingConfig(label=target))
+        metrics, model = trainer.fit(dataset)
+        assert model is not None
+        save_logistic_artifact(model, target, "test-feature", metrics, artifact_dir)
+
     service = RaceAnalysisService(provider=MockProvider(), database_url=f"sqlite:///{tmp_path}/ml-blend.sqlite3")
     features = [_feature(1, 0.7), _feature(2, 0.2)]
     predictions = [_prediction(1, 0.55), _prediction(2, 0.45)]
-    dataset = {"rows": _training_rows_for_blend(target_rows=True)}
 
-    shadow, training_result = service._run_logistic_challenger("target", features, predictions, dataset)
+    shadow, training_result = service._predict_with_saved_logistic_models(features, predictions)
 
     assert training_result["status"] == "shadow_generated"
     assert training_result["application_status"] == "shadow_only"
@@ -134,16 +165,6 @@ def test_analysis_service_saves_logistic_as_shadow_without_changing_champion(tmp
     assert all(row["model_version"] == "logistic-v1" for row in shadow)
     assert [prediction.win_probability for prediction in predictions] == [0.55, 0.45]
     assert [prediction.model_version for prediction in predictions] == ["test", "test"]
-
-    only_target, only_target_result = service._run_logistic_challenger(
-        "target",
-        features,
-        predictions,
-        {"rows": _training_rows_for_blend(target_rows=False, race_id="target")},
-    )
-
-    assert only_target_result["status"] == "insufficient_data"
-    assert only_target == []
 
 
 def test_distance_change_penalty_scales_by_meters():

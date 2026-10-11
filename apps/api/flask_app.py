@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from database.repository import RaceRepository
-from database.session import make_session_factory
+from database.session import get_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.common.models import RaceResultData, RaceResultEntryData, UserPredictionInput
 from services.data_provider.base import ProviderUnavailableError
@@ -26,7 +26,7 @@ from services.parser.race_parser import RaceParser
 def create_app() -> Flask:
     static_dir = Path(__file__).resolve().parents[1] / "web" / "static"
     app = Flask(__name__, static_folder=str(static_dir), static_url_path="")
-    session_factory = make_session_factory(os.getenv("DATABASE_URL"))
+    session_factory = get_session_factory(os.getenv("DATABASE_URL"))
 
     def provider_for_mode(mode: str):
         return JraOfficialProvider() if mode == "jra" else MockProvider()

@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from database.repository import RaceRepository
-from database.session import make_session_factory
+from database.session import get_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.common.models import RaceResultData, RaceResultEntryData, UserPredictionInput
 from services.data_provider.base import ProviderUnavailableError
@@ -76,7 +76,7 @@ def analyze(payload: AnalyzePayload):
     except (ProviderUnavailableError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     response_payload = result.model_dump(mode="json")
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         latest_user_predictions = RaceRepository(session).latest_user_predictions(result.race.race_id)
     response_payload["latest_user_predictions"] = {
         horse_number: prediction.model_dump(mode="json")
@@ -105,7 +105,7 @@ def provider_diagnostics(payload: AnalyzePayload):
 
 @app.post("/api/user-predictions/{race_id}")
 def save_user_predictions(race_id: str, payload: UserPredictionPayload):
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         saved = RaceRepository(session).save_user_predictions(race_id, payload.predictions)
     return {"ok": True, "saved": saved}
 
@@ -118,7 +118,7 @@ def update_results(race_id: str, payload: ResultPayload):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not result:
         raise HTTPException(status_code=404, detail="結果を取得できませんでした。")
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         RaceRepository(session).save_result(result)
     return {"ok": True, "result": result}
 
@@ -146,7 +146,7 @@ def save_manual_result(race_id: str, payload: dict):
         result = _manual_result(race_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         RaceRepository(session).save_result(result)
     return {"ok": True, "result": result}
 
@@ -162,7 +162,7 @@ def review(race_id: str, payload: ResultPayload):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         result_source = "manual"
     elif payload.use_saved_result:
-        with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+        with get_session_factory(os.getenv("DATABASE_URL"))() as session:
             result, saved_source = RaceRepository(session).saved_result(race_id)
         result_source = f"saved_{saved_source}" if saved_source else "saved"
     else:
@@ -173,7 +173,7 @@ def review(race_id: str, payload: ResultPayload):
     if not result:
         raise HTTPException(status_code=404, detail="結果を取得できませんでした。")
     request_user_predictions = _meaningful_user_predictions(payload.predictions)
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         repo = RaceRepository(session)
         repo.save_result(result)
         predictions = repo.latest_snapshot_predictions(race_id)
@@ -195,25 +195,25 @@ def review(race_id: str, payload: ResultPayload):
 
 @app.get("/api/learning")
 def learning():
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         return RaceRepository(session).learning_summary()
 
 
 @app.get("/api/prediction-snapshots/{race_id}")
 def prediction_snapshots(race_id: str, limit: int = 50):
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         return {"race_id": race_id, "snapshots": RaceRepository(session).prediction_snapshots(race_id, limit)}
 
 
 @app.get("/api/races")
 def races(limit: int = 20, racecourse: str | None = None, has_result: bool | None = None, has_review: bool | None = None):
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         return {"races": RaceRepository(session).race_history(limit, racecourse, has_result, has_review)}
 
 
 @app.get("/api/races/{race_id}")
 def race_detail(race_id: str):
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         detail = RaceRepository(session).race_detail(race_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="保存済みレースが見つかりません。")
@@ -222,20 +222,20 @@ def race_detail(race_id: str):
 
 @app.get("/api/export")
 def export_data():
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         return RaceRepository(session).export_data()
 
 
 @app.get("/api/training-dataset")
 def training_dataset():
-    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
         return RaceRepository(session).training_dataset()
 
 
 @app.post("/api/import")
 def import_data(payload: dict):
     try:
-        with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+        with get_session_factory(os.getenv("DATABASE_URL"))() as session:
             result = RaceRepository(session).import_data(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1758,9 +1758,13 @@ class RaceRepository:
         }
 
     def active_factor_adjustments(self) -> dict[str, float]:
-        summary = self.learning_summary(eligible_only=True)
+        reviews = self._eligible_reviews_for_learning(self._latest_reviews_by_race())
+        payloads = [row.payload or {} for row in reviews]
+        factor_attribution = self._factor_attribution_summary(payloads)
+        factor_calibration = self._factor_calibration_summary(payloads)
+        recommendations = self._factor_weight_recommendations(factor_attribution, factor_calibration)
         adjustments: dict[str, float] = {}
-        for row in summary.get("factor_weight_recommendations") or []:
+        for row in recommendations:
             if row.get("readiness") != "candidate":
                 continue
             if row.get("deployment_status") != "champion":
@@ -1775,10 +1779,21 @@ class RaceRepository:
         return adjustments
 
     def _eligible_reviews_for_learning(self, reviews: list[PredictionReview]) -> list[PredictionReview]:
-        eligible = []
-        for review in reviews:
-            race = self.session.get(Race, review.race_id)
-            if race is None:
+        race_ids = {review.race_id for review in reviews}
+        if not race_ids:
+            return []
+        races = {
+            race.race_id: race
+            for race in self.session.scalars(select(Race).where(Race.race_id.in_(race_ids))).all()
+        }
+        eligible_race_ids: set[str] = set()
+        snapshots = self.session.execute(
+            select(PredictionSnapshot.race_id, PredictionSnapshot.prediction_timestamp)
+            .where(PredictionSnapshot.race_id.in_(race_ids))
+        ).all()
+        for race_id, prediction_timestamp in snapshots:
+            race = races.get(race_id)
+            if race is None or race_id in eligible_race_ids:
                 continue
             payload = race.payload or {}
             if not is_supported_flat_race(
@@ -1786,21 +1801,13 @@ class RaceRepository:
                 self._field_value(payload, "race_class"),
             ):
                 continue
-            snapshots = self.session.scalars(
-                select(PredictionSnapshot)
-                .where(PredictionSnapshot.race_id == review.race_id)
-                .order_by(PredictionSnapshot.prediction_timestamp.desc(), PredictionSnapshot.id.desc())
-            ).all()
-            if any(
-                (prediction_lead_minutes(
-                    race.race_date,
-                    self._field_value(payload, "start_time"),
-                    snapshot.prediction_timestamp,
-                ) or 0) > 0
-                for snapshot in snapshots
-            ):
-                eligible.append(review)
-        return eligible
+            if (prediction_lead_minutes(
+                race.race_date,
+                self._field_value(payload, "start_time"),
+                prediction_timestamp,
+            ) or 0) > 0:
+                eligible_race_ids.add(race_id)
+        return [review for review in reviews if review.race_id in eligible_race_ids]
 
     def _latest_reviews_by_race(self) -> list[PredictionReview]:
         rows = self.session.scalars(

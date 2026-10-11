@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 from sqlalchemy import create_engine, select
@@ -27,6 +28,12 @@ def make_session_factory(database_url: str | None = None):
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     _backfill_normalized_tables(factory, database_models)
     return factory
+
+
+@lru_cache(maxsize=16)
+def get_session_factory(database_url: str | None = None):
+    """Return a process-wide factory so schema checks and legacy backfills run once per database."""
+    return make_session_factory(database_url)
 
 
 def _backfill_normalized_tables(factory, models) -> None:
