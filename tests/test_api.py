@@ -1,7 +1,11 @@
+import pytest
+
 from apps.api.flask_app import create_app
+from services.common.models import RaceScheduleItem
 
 
 def test_history_and_learning_available_before_analysis(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/empty.sqlite3")
     app = create_app()
     client = app.test_client()
@@ -10,8 +14,9 @@ def test_history_and_learning_available_before_analysis(tmp_path, monkeypatch):
     index_html = index_response.get_data(as_text=True)
     app_javascript = client.get("/app.js").get_data(as_text=True)
     assert index_response.status_code == 200
+    assert client.get("/api/config").get_json() == {"deployment_mode": "local"}
     assert 'id="mode"' not in index_html
-    assert 'class="utility-menu"' in index_html
+    assert 'class="utility-menu hidden"' in index_html
     assert index_html.count("data-tab=") == 6
     assert 'selectTab("analysis")' in app_javascript
     assert 'class="probability-bar"' in app_javascript
@@ -74,6 +79,166 @@ def test_history_and_learning_available_before_analysis(tmp_path, monkeypatch):
     )
     assert failed_analyze_response.status_code == 400
     assert "Demo fixture" in failed_analyze_response.get_json()["message"]
+
+
+def test_public_mode_blocks_admin_and_upstream_fetch_routes(tmp_path, monkeypatch):
+    from services.data_provider.jra_official import JraOfficialProvider
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/public.sqlite3")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "public")
+
+    def fail_fetch(*_args, **_kwargs):
+        raise AssertionError("public requests must not fetch upstream data")
+
+    monkeypatch.setattr(JraOfficialProvider, "get_race", fail_fetch)
+    monkeypatch.setattr(JraOfficialProvider, "get_race_results", fail_fetch)
+    client = create_app().test_client()
+
+    assert client.get("/api/config").get_json() == {"deployment_mode": "public"}
+    index_html = client.get("/").get_data(as_text=True)
+    assert "本アプリはJRA公式サービスではありません" in index_html
+    assert 'id="local-admin-tools" class="utility-menu hidden"' in index_html
+
+    for response in (
+        client.get("/api/export"),
+        client.get("/api/training-dataset"),
+        client.post("/api/import", json={"format_version": "horseprediction-export-v1", "data": {}}),
+        client.post("/api/provider-diagnostics", json={"mode": "jra"}),
+        client.post("/api/result-diagnostics/unknown", json={"mode": "jra"}),
+        client.get("/api/schedule?date=2026-08-30"),
+    ):
+        assert response.status_code == 404
+        assert response.get_json()["ok"] is False
+
+    request = {"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11, "mode": "jra"}
+    assert client.post("/api/analyze", json=request).status_code == 503
+    assert client.post("/api/results/not-saved", json={"mode": "jra"}).status_code == 503
+    assert client.post("/api/review/not-saved", json={"mode": "jra"}).status_code == 503
+
+
+def test_public_mode_returns_saved_analysis_without_fetching(tmp_path, monkeypatch):
+    from services.data_provider.jra_official import JraOfficialProvider
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/public-saved.sqlite3")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    client = create_app().test_client()
+    response = client.post(
+        "/api/analyze",
+        json={"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11, "mode": "demo", "iterations": 1000},
+    )
+    assert response.status_code == 200
+
+    def fail_fetch(*_args, **_kwargs):
+        raise AssertionError("saved analysis should be returned without fetching")
+
+    monkeypatch.setattr(JraOfficialProvider, "get_race", fail_fetch)
+    monkeypatch.setenv("DEPLOYMENT_MODE", "public")
+    saved = client.post(
+        "/api/analyze",
+        json={"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11, "mode": "jra"},
+    )
+
+    assert saved.status_code == 200
+    assert saved.get_json()["restored_from_saved"] is True
+    race_id = saved.get_json()["race"]["race_id"]
+    snapshots = client.get(f"/api/prediction-snapshots/{race_id}?limit=100").get_json()["snapshots"]
+    assert 0 < len(snapshots) <= 20
+    assert all("raw_features" not in row for row in snapshots)
+    detail = client.get(f"/api/races/{race_id}").get_json()
+    assert all("raw_features" not in row for row in detail["latest_snapshots"])
+
+
+def test_schedule_api_groups_courses_and_hides_provider_urls(tmp_path, monkeypatch):
+    from services.data_provider.jra_official import JraOfficialProvider
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/schedule.sqlite3")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    items = [
+        RaceScheduleItem(
+            race_date="2026-08-30", racecourse="東京", race_number=2, start_time="10:35", source_url="https://www.jra.go.jp/private"
+        ),
+        RaceScheduleItem(race_date="2026-08-30", racecourse="京都", race_number=1, start_time="09:55"),
+        RaceScheduleItem(race_date="2026-08-30", racecourse="東京", race_number=1, start_time="10:05", race_type="obstacle"),
+    ]
+    monkeypatch.setattr(JraOfficialProvider, "list_races", lambda _self, race_date: items if race_date == "2026-08-30" else [])
+    client = create_app().test_client()
+
+    response = client.get("/api/schedule?date=2026-08-30")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "race_date": "2026-08-30",
+        "racecourses": [
+            {"name": "京都", "races": [{"race_number": 1, "start_time": "09:55", "race_type": "flat"}]},
+            {
+                "name": "東京",
+                "races": [
+                    {"race_number": 1, "start_time": "10:05", "race_type": "obstacle"},
+                    {"race_number": 2, "start_time": "10:35", "race_type": "flat"},
+                ],
+            },
+        ],
+    }
+    assert client.get("/api/schedule?date=2026-02-30").status_code == 400
+
+
+def test_fastapi_public_mode_uses_the_same_public_boundary(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from apps.api.main import app as fastapi_app
+    from services.data_provider.jra_official import JraOfficialProvider
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/fastapi-public.sqlite3")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "public")
+
+    def fail_fetch(*_args, **_kwargs):
+        raise AssertionError("public requests must not fetch upstream data")
+
+    monkeypatch.setattr(JraOfficialProvider, "get_race", fail_fetch)
+    monkeypatch.setattr(JraOfficialProvider, "get_race_results", fail_fetch)
+    client = TestClient(fastapi_app)
+
+    assert client.get("/api/config").json() == {"deployment_mode": "public"}
+    for response in (
+        client.get("/api/export"),
+        client.get("/api/training-dataset"),
+        client.post("/api/import", json={"format_version": "horseprediction-export-v1", "data": {}}),
+        client.post("/api/provider-diagnostics", json={"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11}),
+        client.post("/api/result-diagnostics/not-saved", json={}),
+        client.get("/api/schedule?date=2026-08-30"),
+    ):
+        assert response.status_code == 404
+        assert response.json()["ok"] is False
+
+    analyze_payload = {"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11, "mode": "jra"}
+    assert client.post("/api/analyze", json=analyze_payload).status_code == 503
+    assert client.post("/api/results/not-saved", json={}).status_code == 503
+    assert client.post("/api/review/not-saved", json={}).status_code == 503
+
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    saved_demo = client.post("/api/analyze", json={**analyze_payload, "mode": "demo", "iterations": 1000})
+    assert saved_demo.status_code == 200
+    monkeypatch.setenv("DEPLOYMENT_MODE", "public")
+    saved_public = client.post("/api/analyze", json=analyze_payload)
+    assert saved_public.status_code == 200
+    assert saved_public.json()["restored_from_saved"] is True
+    race_id = saved_public.json()["race"]["race_id"]
+    snapshots = client.get(f"/api/prediction-snapshots/{race_id}?limit=100").json()["snapshots"]
+    assert 0 < len(snapshots) <= 20
+    assert all("raw_features" not in row for row in snapshots)
+
+    items = [
+        RaceScheduleItem(race_date="2026-08-30", racecourse="東京", race_number=1, start_time="10:05", race_type="obstacle"),
+    ]
+    monkeypatch.setattr(JraOfficialProvider, "list_races", lambda _self, _race_date: items)
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    schedule = client.get("/api/schedule?date=2026-08-30")
+    assert schedule.status_code == 200
+    assert schedule.json() == {
+        "race_date": "2026-08-30",
+        "racecourses": [{"name": "東京", "races": [{"race_number": 1, "start_time": "10:05", "race_type": "obstacle"}]}],
+    }
 
 
 def test_review_does_not_recompute_prediction_after_result(tmp_path, monkeypatch):

@@ -15,6 +15,8 @@ from database.repository import RaceRepository
 from database.session import get_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.common.models import RaceResultData, RaceResultEntryData, UserPredictionInput
+from services.common.deployment import deployment_mode, is_public_deployment
+from services.common.schedule import schedule_response, validate_schedule_date
 from services.data_provider.base import ProviderUnavailableError
 from services.data_provider.jra_official import JraOfficialProvider
 from services.data_provider.mock import MockProvider
@@ -62,10 +64,47 @@ def create_app() -> Flask:
     def index():
         return send_from_directory(static_dir, "index.html")
 
+    @app.get("/api/config")
+    def public_config():
+        return jsonify({"deployment_mode": deployment_mode()})
+
+    @app.get("/api/schedule")
+    def race_schedule():
+        if is_public_deployment():
+            return local_only_response()
+        try:
+            race_date = validate_schedule_date(request.args.get("date"))
+            items = JraOfficialProvider().list_races(race_date)
+        except ValueError as exc:
+            return jsonify({"ok": False, "message": str(exc)}), 400
+        except ProviderUnavailableError as exc:
+            return jsonify({"ok": False, "message": str(exc)}), 503
+        return jsonify(schedule_response(race_date, items))
+
+    def local_only_response():
+        return jsonify({"ok": False, "message": "この機能はローカルモードでのみ利用できます。"}), 404
+
+    def not_prepared_response():
+        return jsonify(
+            {
+                "ok": False,
+                "message": "このレースの保存済み分析はありません。管理された取得処理の完了後に利用できます。",
+                "prepared": False,
+            }
+        ), 503
+
+    def public_snapshot(snapshot: dict) -> dict:
+        return {key: value for key, value in snapshot.items() if key != "raw_features"}
+
     @app.post("/api/analyze")
     def analyze():
         payload = request.get_json(force=True)
         mode = payload.get("mode", "jra")
+        if is_public_deployment():
+            saved_detail = saved_analysis_for(payload)
+            if saved_detail and saved_detail.get("latest_analysis_run") and saved_detail.get("latest_predictions"):
+                return jsonify(saved_analysis_payload(saved_detail))
+            return not_prepared_response()
         saved_detail = saved_analysis_for(payload) if mode == "jra" else None
         if saved_detail and saved_detail.get("result"):
             return jsonify(saved_analysis_payload(saved_detail))
@@ -96,6 +135,8 @@ def create_app() -> Flask:
 
     @app.post("/api/provider-diagnostics")
     def provider_diagnostics():
+        if is_public_deployment():
+            return local_only_response()
         payload = request.get_json(force=True)
         mode = payload.get("mode", "jra")
         provider = provider_for_mode(mode)
@@ -128,6 +169,16 @@ def create_app() -> Flask:
         payload = request.get_json(silent=True) or {}
         with session_factory() as session:
             saved_result, saved_source = RaceRepository(session).saved_result(race_id)
+        if is_public_deployment():
+            if saved_result is None:
+                return not_prepared_response()
+            return jsonify(
+                {
+                    "ok": True,
+                    "result": saved_result.model_dump(mode="json"),
+                    "result_source": f"saved_{saved_source}" if saved_source else "saved",
+                }
+            )
         if saved_result is not None and not payload.get("force_refresh"):
             return jsonify(
                 {
@@ -168,6 +219,8 @@ def create_app() -> Flask:
 
     @app.post("/api/result-diagnostics/<race_id>")
     def result_diagnostics(race_id: str):
+        if is_public_deployment():
+            return local_only_response()
         payload = request.get_json(silent=True) or {}
         provider = provider_for_mode(payload.get("mode", "jra"))
         try:
@@ -200,6 +253,8 @@ def create_app() -> Flask:
     @app.post("/api/review/<race_id>")
     def review(race_id: str):
         payload = request.get_json(force=True)
+        if is_public_deployment() and not (payload.get("result") or payload.get("use_saved_result")):
+            return not_prepared_response()
         provider = provider_for_mode(payload.get("mode", "jra"))
         result_source = "provider"
         if payload.get("result"):
@@ -249,8 +304,13 @@ def create_app() -> Flask:
     @app.get("/api/prediction-snapshots/<race_id>")
     def prediction_snapshots(race_id: str):
         limit = int(request.args.get("limit", 50))
+        if is_public_deployment():
+            limit = max(1, min(limit, 20))
         with session_factory() as session:
-            return jsonify({"race_id": race_id, "snapshots": RaceRepository(session).prediction_snapshots(race_id, limit)})
+            snapshots = RaceRepository(session).prediction_snapshots(race_id, limit)
+        if is_public_deployment():
+            snapshots = [public_snapshot(row) for row in snapshots]
+        return jsonify({"race_id": race_id, "snapshots": snapshots})
 
     @app.get("/api/races")
     def races():
@@ -258,6 +318,8 @@ def create_app() -> Flask:
         racecourse = request.args.get("racecourse") or None
         has_result = _bool_query(request.args.get("has_result"))
         has_review = _bool_query(request.args.get("has_review"))
+        if is_public_deployment():
+            limit = max(1, min(limit, 50))
         with session_factory() as session:
             return jsonify({"races": RaceRepository(session).race_history(limit, racecourse, has_result, has_review)})
 
@@ -267,20 +329,28 @@ def create_app() -> Flask:
             detail = RaceRepository(session).race_detail(race_id)
         if detail is None:
             return jsonify({"ok": False, "message": "保存済みレースが見つかりません。"}), 404
+        if is_public_deployment():
+            detail["latest_snapshots"] = [public_snapshot(row) for row in detail.get("latest_snapshots") or []]
         return jsonify(detail)
 
     @app.get("/api/export")
     def export_data():
+        if is_public_deployment():
+            return local_only_response()
         with session_factory() as session:
             return jsonify(RaceRepository(session).export_data())
 
     @app.get("/api/training-dataset")
     def training_dataset():
+        if is_public_deployment():
+            return local_only_response()
         with session_factory() as session:
             return jsonify(RaceRepository(session).training_dataset())
 
     @app.post("/api/import")
     def import_data():
+        if is_public_deployment():
+            return local_only_response()
         payload = request.get_json(force=True)
         try:
             with session_factory() as session:
