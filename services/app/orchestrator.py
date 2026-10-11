@@ -78,21 +78,45 @@ class RaceAnalysisService:
 
         race, entries, histories = timed("provider_fetch", fetch_race_data)
         factor_adjustments: dict[str, float] = {}
+        aptitude_histories: dict[str, list[dict]] = {}
         pedigree_stats: dict[str, dict] = {}
         track_bias: dict = {}
         qualitative_evidence = {}
         with self.session_factory() as session:
             repo = RaceRepository(session)
 
-            def fill_history_fallback():
-                for entry in entries:
-                    if not histories.get(entry.horse.horse_id):
-                        histories[entry.horse.horse_id] = repo.get_horse_history(
-                            entry.horse.horse_id,
-                            before_date=str(race.race_date.value),
+            def load_history_profiles():
+                horse_ids = [entry.horse.horse_id for entry in entries]
+                stored_histories = repo.get_horse_histories(
+                    horse_ids,
+                    limit=20,
+                    before_date=str(race.race_date.value),
+                )
+                for horse_id in horse_ids:
+                    provider_history = histories.get(horse_id) or []
+                    stored_history = stored_histories.get(horse_id) or []
+                    combined: dict[tuple, dict] = {}
+                    for item in stored_history + provider_history:
+                        item_date = str(item.get("race_date") or "")
+                        if item_date and item_date >= str(race.race_date.value):
+                            continue
+                        key = (
+                            item.get("race_date"),
+                            item.get("racecourse"),
+                            item.get("race_name"),
+                            item.get("distance"),
                         )
+                        combined[key] = {**combined.get(key, {}), **item}
+                    merged = sorted(
+                        combined.values(),
+                        key=lambda item: str(item.get("race_date") or ""),
+                        reverse=True,
+                    )[:20]
+                    aptitude_histories[horse_id] = merged
+                    if not provider_history:
+                        histories[horse_id] = merged[:5]
 
-            timed("history_fallback", fill_history_fallback)
+            timed("history_profiles", load_history_profiles)
             factor_adjustments = timed("factor_adjustments", repo.active_factor_adjustments)
             pedigree_stats = timed("pedigree_stats", lambda: repo.pedigree_condition_stats(race, entries))
             track_bias = timed("track_bias", lambda: repo.track_bias_stats(race))
@@ -112,6 +136,7 @@ class RaceAnalysisService:
                 race,
                 entries,
                 histories,
+                aptitude_histories=aptitude_histories,
                 pedigree_stats=pedigree_stats,
                 track_bias=track_bias,
             ),

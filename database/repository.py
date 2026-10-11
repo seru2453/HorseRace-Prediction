@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 from statistics import mean
 
@@ -1673,6 +1673,36 @@ class RaceRepository:
             statement = statement.where(PastPerformance.race_date < before_date)
         rows = self.session.scalars(statement.order_by(PastPerformance.race_date.desc()).limit(limit)).all()
         return [row.payload for row in rows]
+
+    def get_horse_histories(
+        self,
+        horse_ids: list[str],
+        limit: int = 20,
+        before_date: str | None = None,
+    ) -> dict[str, list[dict]]:
+        unique_horse_ids = set(horse_ids)
+        if not unique_horse_ids:
+            return {}
+        ranking = func.row_number().over(
+            partition_by=PastPerformance.horse_id,
+            order_by=(PastPerformance.race_date.desc(), PastPerformance.id.desc()),
+        ).label("history_rank")
+        statement = select(PastPerformance.id.label("performance_id"), ranking).where(
+            PastPerformance.horse_id.in_(unique_horse_ids)
+        )
+        if before_date:
+            statement = statement.where(PastPerformance.race_date < before_date)
+        ranked = statement.subquery()
+        rows = self.session.scalars(
+            select(PastPerformance)
+            .join(ranked, ranked.c.performance_id == PastPerformance.id)
+            .where(ranked.c.history_rank <= max(1, int(limit)))
+            .order_by(PastPerformance.horse_id, PastPerformance.race_date.desc(), PastPerformance.id.desc())
+        ).all()
+        histories: dict[str, list[dict]] = {horse_id: [] for horse_id in unique_horse_ids}
+        for row in rows:
+            histories[row.horse_id].append(row.payload or {})
+        return histories
 
     def learning_summary(self, eligible_only: bool = False) -> dict:
         reviews = self._latest_reviews_by_race()
