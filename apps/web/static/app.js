@@ -17,6 +17,11 @@ let current = null;
 const LAST_ANALYSIS_KEY = "horseprediction:last-analysis";
 const UI_STATE_KEY = "horseprediction:ui-state";
 const RESULT_REFRESH_INTERVAL_MS = 15000;
+const SCHEDULE_CACHE_TTL_MS = 5 * 60 * 1000;
+const MANUAL_RACECOURSES = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"];
+let availableSchedule = null;
+let scheduleRequestId = 0;
+const scheduleCache = new Map();
 const historyFilters = {
   racecourse: "",
   hasResult: "",
@@ -48,14 +53,72 @@ async function loadDeploymentConfig() {
   }
 }
 
-for (let i = 1; i <= 12; i += 1) {
-  const option = document.createElement("option");
-  option.value = String(i);
-  option.textContent = `${i}R`;
-  if (i === 11) option.selected = true;
-  raceNumber.append(option);
+function populateManualRacecourses(preferredCourse) {
+  racecourse.replaceChildren(...MANUAL_RACECOURSES.map((name) => new Option(name, name)));
+  racecourse.value = MANUAL_RACECOURSES.includes(preferredCourse) ? preferredCourse : MANUAL_RACECOURSES[0];
 }
+
+function populateManualRaceNumbers(preferredNumber) {
+  const selected = Number(preferredNumber);
+  raceNumber.replaceChildren(...Array.from({length: 12}, (_, index) => {
+    const number = index + 1;
+    return new Option(`${number}R`, String(number), false, number === selected);
+  }));
+  if (!raceNumber.value) raceNumber.value = "11";
+}
+
+function updateRaceNumberOptions(preferredNumber = raceNumber.value) {
+  if (!availableSchedule) {
+    populateManualRaceNumbers(preferredNumber);
+    return;
+  }
+  const races = availableSchedule.get(racecourse.value) || [];
+  raceNumber.replaceChildren(...races.map((race) => new Option(
+    `${race.race_number}R ${race.start_time}`,
+    String(race.race_number),
+    false,
+    String(race.race_number) === String(preferredNumber)
+  )));
+  if (!raceNumber.value && races.length) {
+    const preferred = races.find((race) => race.race_number === 11) || races[0];
+    raceNumber.value = String(preferred.race_number);
+  }
+}
+
+async function loadRaceSchedule(date, preferredCourse, preferredNumber) {
+  const requestId = ++scheduleRequestId;
+  try {
+    let racecourses = scheduleCache.get(date)?.racecourses;
+    if (!racecourses || scheduleCache.get(date).expiresAt < Date.now()) {
+      const response = await fetch(`/api/schedule?date=${encodeURIComponent(date)}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || "開催一覧を取得できませんでした。");
+      racecourses = payload.racecourses || [];
+      if (!racecourses.length) throw new Error("この日の開催情報はありません。");
+      scheduleCache.set(date, {racecourses, expiresAt: Date.now() + SCHEDULE_CACHE_TTL_MS});
+    }
+    if (requestId !== scheduleRequestId) return;
+    availableSchedule = new Map(racecourses.map((course) => [course.name, course.races || []]));
+    racecourse.replaceChildren(...racecourses.map((course) => new Option(course.name, course.name)));
+    racecourse.value = availableSchedule.has(preferredCourse) ? preferredCourse : racecourses[0].name;
+    updateRaceNumberOptions(preferredNumber);
+    clearError();
+  } catch (error) {
+    if (requestId !== scheduleRequestId) return;
+    availableSchedule = null;
+    populateManualRacecourses(preferredCourse);
+    populateManualRaceNumbers(preferredNumber);
+    showError(`${error.message || "開催一覧を取得できませんでした。"} 手動選択に切り替えています。`);
+  }
+  saveUiState();
+}
+
+populateManualRacecourses(MANUAL_RACECOURSES[0]);
+populateManualRaceNumbers(11);
 restoreUiState();
+raceDate.addEventListener("change", () => loadRaceSchedule(raceDate.value, racecourse.value, raceNumber.value));
+racecourse.addEventListener("change", () => updateRaceNumberOptions());
+loadRaceSchedule(raceDate.value, racecourse.value, raceNumber.value);
 form.addEventListener("change", saveUiState);
 form.addEventListener("input", saveUiState);
 window.addEventListener("beforeunload", saveUiState);
@@ -761,6 +824,7 @@ function openSavedAnalysis(detail) {
   raceDate.value = race.race_date.value;
   racecourse.value = race.racecourse.value;
   raceNumber.value = String(race.race_number.value);
+  loadRaceSchedule(raceDate.value, racecourse.value, raceNumber.value);
   saveUiState();
   saveLastAnalysisState();
   renderAll();

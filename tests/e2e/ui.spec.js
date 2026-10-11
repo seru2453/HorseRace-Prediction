@@ -1,6 +1,29 @@
 const { test, expect } = require("@playwright/test");
 
+async function stubSchedule(page) {
+  await page.route("**/api/schedule?*", async (route) => {
+    const date = new URL(route.request().url()).searchParams.get("date");
+    const racecourse = date === "2026-09-12" ? "阪神" : "札幌";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        race_date: date,
+        racecourses: [{
+          name: racecourse,
+          races: Array.from({length: 12}, (_, index) => ({
+            race_number: index + 1,
+            start_time: `10:${String(index * 5).padStart(2, "0")}`,
+            race_type: "flat"
+          }))
+        }]
+      })
+    });
+  });
+}
+
 test("analysis is visual and reload restores the race and tab", async ({ page }, testInfo) => {
+  await stubSchedule(page);
   await page.route("**/api/analyze", async (route) => {
     const payload = JSON.parse(route.request().postData() || "{}");
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -111,6 +134,7 @@ test("analysis is visual and reload restores the race and tab", async ({ page },
 });
 
 test("a previous-day selection is restored after reload", async ({ page }) => {
+  await stubSchedule(page);
   await page.addInitScript(() => {
     localStorage.setItem("horseprediction:ui-state", JSON.stringify({
       race_date: "2026-08-29",
@@ -134,6 +158,7 @@ test("a previous-day selection is restored after reload", async ({ page }) => {
 });
 
 test("a changed race date is not overwritten by the previous analysis", async ({ page }) => {
+  await stubSchedule(page);
   await page.addInitScript(() => {
     localStorage.setItem("horseprediction:ui-state", JSON.stringify({
       race_date: "2026-09-12",
@@ -154,4 +179,32 @@ test("a changed race date is not overwritten by the previous analysis", async ({
   await expect(page.locator("#racecourse")).toHaveValue("阪神");
   await expect(page.locator("#race-number")).toHaveValue("11");
   await expect(page.locator("#tabs")).toBeHidden();
+});
+
+test("race selection follows the daily schedule and falls back to manual options", async ({ page }) => {
+  await page.route("**/api/schedule?*", async (route) => {
+    const date = new URL(route.request().url()).searchParams.get("date");
+    if (date === "2026-09-12") {
+      await route.fulfill({status: 503, contentType: "application/json", body: JSON.stringify({message: "schedule unavailable"})});
+      return;
+    }
+    const racecourses = date === "2026-08-30"
+      ? [
+          {name: "東京", races: [{race_number: 2, start_time: "10:35", race_type: "flat"}, {race_number: 11, start_time: "15:45", race_type: "flat"}]},
+          {name: "京都", races: [{race_number: 1, start_time: "09:55", race_type: "obstacle"}]}
+        ]
+      : [{name: "札幌", races: [{race_number: 11, start_time: "15:25", race_type: "flat"}]}];
+    await route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({race_date: date, racecourses})});
+  });
+
+  await page.goto("/");
+  await page.locator("#race-date").fill("2026-08-30");
+  await expect(page.locator("#racecourse option")).toHaveText(["東京", "京都"]);
+  await page.locator("#racecourse").selectOption("東京");
+  await expect(page.locator("#race-number option")).toHaveText(["2R 10:35", "11R 15:45"]);
+
+  await page.locator("#race-date").fill("2026-09-12");
+  await expect(page.locator("#error")).toContainText("手動選択に切り替えています");
+  await expect(page.locator("#racecourse option")).toHaveCount(10);
+  await expect(page.locator("#race-number option")).toHaveCount(12);
 });

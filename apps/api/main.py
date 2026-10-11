@@ -22,6 +22,7 @@ from database.session import make_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.common.models import RaceResultData, RaceResultEntryData, UserPredictionInput
 from services.common.deployment import deployment_mode, is_public_deployment
+from services.common.schedule import schedule_response, validate_schedule_date
 from services.data_provider.base import ProviderUnavailableError
 from services.data_provider.jra_official import JraOfficialProvider
 from services.data_provider.mock import MockProvider
@@ -111,6 +112,20 @@ def _public_snapshot(snapshot: dict) -> dict:
 @app.get("/api/config")
 def public_config():
     return {"deployment_mode": deployment_mode()}
+
+
+@app.get("/api/schedule")
+def race_schedule(date: str):
+    if is_public_deployment():
+        return _local_only_response()
+    try:
+        race_date = validate_schedule_date(date)
+        items = JraOfficialProvider().list_races(race_date)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "message": str(exc)})
+    except ProviderUnavailableError as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "message": str(exc)})
+    return schedule_response(race_date, items)
 
 
 @app.post("/api/analyze")
