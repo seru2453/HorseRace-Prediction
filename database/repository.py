@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -104,26 +104,31 @@ class RaceRepository:
         target_surface = str(race.surface.value or "")
         target_band = self._distance_band(race.distance.value)
         buckets: dict[tuple[str, str], list[bool]] = {}
-        historical_races = self.session.scalars(
-            select(Race).where(Race.race_date < target_date).order_by(Race.race_date)
+        historical_rows = self.session.execute(
+            select(Race, RaceResult.payload)
+            .join(RaceResult, RaceResult.race_id == Race.race_id)
+            .where(Race.race_date < target_date)
+            .order_by(Race.race_date)
         ).all()
-        for historical_race in historical_races:
-            result = self.session.get(RaceResult, historical_race.race_id)
-            if result is None:
-                continue
+        grouped_history: dict[str, tuple[Race, dict, list[RaceEntry]]] = {}
+        for historical_race, result_payload in historical_rows:
             surface = str(self._field_value(historical_race.payload or {}, "surface") or "")
             distance = self._field_value(historical_race.payload or {}, "distance")
-            if surface != target_surface or self._distance_band(distance) != target_band:
-                continue
+            if surface == target_surface and self._distance_band(distance) == target_band:
+                grouped_history[historical_race.race_id] = (historical_race, result_payload or {}, [])
+        if grouped_history:
+            historical_entries = self.session.scalars(
+                select(RaceEntry).where(RaceEntry.race_id.in_(grouped_history))
+            ).all()
+            for historical_entry in historical_entries:
+                grouped_history[historical_entry.race_id][2].append(historical_entry)
+        for historical_race, result_payload, historical_entries in grouped_history.values():
             result_by_number = {
                 int(item["horse_number"]): item
-                for item in (result.payload or {}).get("entries", [])
+                for item in (result_payload or {}).get("entries", [])
                 if item.get("horse_number") is not None
             }
-            race_entries = self.session.scalars(
-                select(RaceEntry).where(RaceEntry.race_id == historical_race.race_id)
-            ).all()
-            for historical_entry in race_entries:
+            for historical_entry in historical_entries:
                 result_entry = result_by_number.get(historical_entry.horse_number)
                 finish = result_entry.get("finish_position") if result_entry else None
                 if finish is None:
@@ -154,31 +159,38 @@ class RaceRepository:
         target_number = int(race.race_number.value)
         target_surface = str(race.surface.value or "")
         target_band = self._distance_band(race.distance.value)
-        candidates = self.session.scalars(
-            select(Race)
-            .where(Race.racecourse == target_course, Race.race_date <= target_date)
+        previous_date = (datetime.fromisoformat(target_date) - timedelta(days=1)).date().isoformat()
+        candidate_rows = self.session.execute(
+            select(Race, RaceResult.payload)
+            .join(RaceResult, RaceResult.race_id == Race.race_id)
+            .where(
+                Race.racecourse == target_course,
+                Race.race_date >= previous_date,
+                Race.race_date <= target_date,
+            )
             .order_by(Race.race_date.desc(), Race.race_number.desc())
         ).all()
+        grouped_candidates: dict[str, tuple[Race, dict, list[RaceEntry]]] = {
+            historical_race.race_id: (historical_race, result_payload or {}, [])
+            for historical_race, result_payload in candidate_rows
+        }
+        if grouped_candidates:
+            candidate_entries = self.session.scalars(
+                select(RaceEntry).where(RaceEntry.race_id.in_(grouped_candidates))
+            ).all()
+            for race_entry in candidate_entries:
+                grouped_candidates[race_entry.race_id][2].append(race_entry)
         weighted_positions: list[tuple[float, float]] = []
         same_day_index = 0
         race_samples = 0
-        for historical_race in candidates:
+        for historical_race, result_payload, race_entries in grouped_candidates.values():
             if historical_race.race_id == race.race_id:
                 continue
             if historical_race.race_date == target_date and historical_race.race_number >= target_number:
                 continue
-            if historical_race.race_date < target_date:
-                age_days = (
-                    datetime.fromisoformat(target_date) - datetime.fromisoformat(historical_race.race_date)
-                ).days
-                if age_days > 1:
-                    break
             surface = str(self._field_value(historical_race.payload or {}, "surface") or "")
             distance = self._field_value(historical_race.payload or {}, "distance")
             if surface != target_surface or self._distance_band(distance) != target_band:
-                continue
-            result = self.session.get(RaceResult, historical_race.race_id)
-            if result is None:
                 continue
             if historical_race.race_date == target_date:
                 decay = DEFAULT_STABILITY_CONFIG.track_bias_decay[
@@ -187,14 +199,9 @@ class RaceRepository:
                 same_day_index += 1
             else:
                 decay = DEFAULT_STABILITY_CONFIG.track_bias_decay[-1]
-            entries_by_number = {
-                row.horse_number: row
-                for row in self.session.scalars(
-                    select(RaceEntry).where(RaceEntry.race_id == historical_race.race_id)
-                ).all()
-            }
+            entries_by_number = {entry.horse_number: entry for entry in race_entries}
             used = False
-            for result_entry in (result.payload or {}).get("entries", []):
+            for result_entry in (result_payload or {}).get("entries", []):
                 finish = result_entry.get("finish_position")
                 if finish is None or int(finish) > 3:
                     continue

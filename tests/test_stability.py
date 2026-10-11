@@ -1,3 +1,5 @@
+from sqlalchemy import event
+
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from database.repository import RaceRepository
 from database.session import make_session_factory
@@ -165,7 +167,14 @@ def test_pedigree_and_track_bias_use_only_saved_prior_results(tmp_path):
     with make_session_factory(database_url)() as session:
         repo = RaceRepository(session)
         repo.save_result(result)
+        query_counts = {"pedigree": 0, "track_bias": 0}
+
+        def count_pedigree_query(*_args):
+            query_counts["pedigree"] += 1
+
+        event.listen(session.bind, "before_cursor_execute", count_pedigree_query)
         same_day_pedigree = repo.pedigree_condition_stats(analysis.race, analysis.entries)
+        query_counts["pedigree"] = 0
         future_race = analysis.race.model_copy(
             update={
                 "race_id": "20260816-sapporo-12",
@@ -176,11 +185,19 @@ def test_pedigree_and_track_bias_use_only_saved_prior_results(tmp_path):
             analysis.race.model_copy(update={"race_date": field("2026-08-17", 1.0, "test")}),
             analysis.entries,
         )
+        event.remove(session.bind, "before_cursor_execute", count_pedigree_query)
+        def count_track_query(*_args):
+            query_counts["track_bias"] += 1
+
+        event.listen(session.bind, "before_cursor_execute", count_track_query)
         track_bias = repo.track_bias_stats(future_race)
+        event.remove(session.bind, "before_cursor_execute", count_track_query)
 
     assert same_day_pedigree[analysis.entries[0].horse.horse_id]["sire_condition_starts"] == 0
     assert pedigree[analysis.entries[0].horse.horse_id]["sire_condition_starts"] == 1
     assert pedigree[analysis.entries[0].horse.horse_id]["sire_condition_top3_rate"] in {0.0, 1.0}
+    assert query_counts["pedigree"] == 2
     assert track_bias["race_count"] == 1
     assert track_bias["sample_status"] == "LOW_SAMPLE"
+    assert query_counts["track_bias"] == 2
     assert abs(FeatureGenerator()._track_bias_adjustment(track_bias["raw_bias"], 1, 1)) < 0.01
