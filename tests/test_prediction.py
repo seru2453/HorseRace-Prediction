@@ -28,7 +28,7 @@ def test_prediction_probabilities_are_bounded_and_normalized(tmp_path):
         assert item.explanation["negative"]
         assert item.explanation["score_factors"][0] == "基礎点 +1.00"
         assert item.model_version == "baseline-v1"
-        assert item.feature_version == "mvp-feature-v32"
+        assert item.feature_version == "mvp-feature-v33"
 
 
 def test_analysis_rejects_post_start_prediction_when_enforced(tmp_path):

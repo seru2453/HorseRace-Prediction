@@ -6,7 +6,7 @@ from services.common.models import HorseFeature, RaceData, RaceEntryData
 from services.ml.targets import relative_finish
 from services.prediction.config import DEFAULT_STABILITY_CONFIG
 
-FEATURE_VERSION = "mvp-feature-v32"
+FEATURE_VERSION = "mvp-feature-v33"
 
 GRADE_LEVELS = {
     "G1": 4,
@@ -104,10 +104,12 @@ class FeatureGenerator:
         race: RaceData,
         entries: list[RaceEntryData],
         histories: dict[str, list] | None = None,
+        aptitude_histories: dict[str, list] | None = None,
         pedigree_stats: dict[str, dict] | None = None,
         track_bias: dict | None = None,
     ) -> list[HorseFeature]:
         histories = histories or {}
+        aptitude_histories = aptitude_histories or {}
         pedigree_stats = pedigree_stats or {}
         track_bias = track_bias or {}
         generated: list[HorseFeature] = []
@@ -123,6 +125,7 @@ class FeatureGenerator:
         field_implied_win_shares = self._field_value_shares(entries, lambda entry: self._implied_win_probability(entry.win_odds.value))
         for entry in entries:
             history = histories.get(entry.horse.horse_id, [])
+            aptitude_history = aptitude_histories.get(entry.horse.horse_id) or history
             unavailable = []
             recent_finishes = [item.get("finish_position") for item in history if item.get("finish_position") is not None][:5]
             recent_f3 = [item.get("final_three_furlongs") for item in history if item.get("final_three_furlongs") is not None][:5]
@@ -190,6 +193,12 @@ class FeatureGenerator:
             if last_run.get("surface") is None:
                 unavailable.append("surface_change")
             current_distance_band = self._distance_band(race.distance.value)
+            distance_aptitude = self._distance_aptitude_profile(
+                aptitude_history,
+                race.distance.value,
+                race.racecourse.value,
+                race.surface.value,
+            )
             course_frame_bias, course_frame_bias_label = self._course_frame_bias(
                 race.racecourse.value,
                 race.surface.value,
@@ -264,6 +273,8 @@ class FeatureGenerator:
             if distance_band_match_top3 is None:
                 unavailable.append("distance_band")
                 unavailable.append("same_distance_band_top3_rate")
+            if distance_aptitude["distance_sample_count"] == 0:
+                unavailable.append("distance_aptitude")
             if surface_match_top3 is None:
                 unavailable.append("same_surface_top3_rate")
             if track_condition_match_top3 is None:
@@ -386,6 +397,7 @@ class FeatureGenerator:
                 "same_distance_top3_rate": distance_match_top3,
                 "same_distance_sample_count": condition_counts["same_distance"],
                 "same_distance_shrunk_top3_rate": self._shrunk_rate(distance_match_top3, condition_counts["same_distance"]),
+                **distance_aptitude,
                 "same_distance_sample_status": self._sample_status(condition_counts["same_distance"]),
                 "same_distance_band_top3_rate": distance_band_match_top3,
                 "same_distance_band_sample_count": condition_counts["same_distance_band"],
@@ -857,6 +869,123 @@ class FeatureGenerator:
         if meters <= 2200:
             return "middle"
         return "stayer"
+
+    def _distance_aptitude_profile(
+        self,
+        history: list[dict],
+        current_distance: object,
+        racecourse: object,
+        surface: object,
+    ) -> dict[str, float | int | str | None]:
+        try:
+            target_distance = int(current_distance)
+        except (TypeError, ValueError):
+            target_distance = 0
+        target_course = str(racecourse or "").strip()
+        target_surface = str(surface or "").strip()
+        valid: list[tuple[int, int, int, dict, int]] = []
+        for index, row in enumerate(history):
+            try:
+                distance = int(row.get("distance"))
+                finish = int(row.get("finish_position"))
+            except (TypeError, ValueError):
+                continue
+            if distance <= 0 or finish <= 0:
+                continue
+            try:
+                field_size = int(row.get("field_size") or 0)
+            except (TypeError, ValueError):
+                field_size = 0
+            valid.append((distance, finish, field_size, row, index))
+
+        surface_rows = [
+            item for item in valid
+            if not target_surface or str(item[3].get("surface") or "").strip() == target_surface
+        ]
+        exact = [item for item in surface_rows if item[0] == target_distance]
+        near = [item for item in surface_rows if abs(item[0] - target_distance) <= 400]
+        course_near = [
+            item for item in near
+            if target_course and str(item[3].get("racecourse") or "").strip() == target_course
+        ]
+
+        def rate(rows: list[tuple[int, int, int, dict, int]], maximum_finish: int) -> float | None:
+            return sum(item[1] <= maximum_finish for item in rows) / len(rows) if rows else None
+
+        def average_finish_ratio(rows: list[tuple[int, int, int, dict, int]]) -> float | None:
+            ratios = [
+                (field_size - finish) / (field_size - 1)
+                for _, finish, field_size, _, _ in rows
+                if field_size > 1
+            ]
+            return sum(ratios) / len(ratios) if ratios else None
+
+        def distance_weight(delta: int) -> float:
+            if delta == 0:
+                return 1.0
+            if delta <= 200:
+                return 0.9
+            if delta <= 400:
+                return 0.75
+            if delta <= 600:
+                return 0.5
+            if delta <= 800:
+                return 0.3
+            return 0.1
+
+        def weighted_score(rows: list[tuple[int, int, int, dict, int]]) -> float | None:
+            weighted_scores: list[tuple[float, float]] = []
+            for distance, finish, field_size, _, index in rows:
+                if field_size > 1:
+                    finish_score = (field_size - finish) / (field_size - 1)
+                else:
+                    continue
+                recency_weight = 0.9 ** index
+                weighted_scores.append((finish_score, distance_weight(abs(distance - target_distance)) * recency_weight))
+            return (
+                sum(score * weight for score, weight in weighted_scores) / sum(weight for _, weight in weighted_scores)
+                if weighted_scores
+                else None
+            )
+
+        distance_weighted_score = weighted_score(surface_rows)
+        near_weighted_score = weighted_score(near)
+
+        preferred_rows = [item for item in surface_rows if item[1] <= 5]
+        preferred_weights = [((1.0 if item[1] <= 3 else 0.6) * (0.9 ** item[4])) for item in preferred_rows]
+        preferred_center = (
+            sum(item[0] * weight for item, weight in zip(preferred_rows, preferred_weights, strict=True))
+            / sum(preferred_weights)
+            if preferred_rows
+            else None
+        )
+        preferred_distances = [item[0] for item in preferred_rows]
+        return {
+            "aptitude_history_count": len(history),
+            "distance_sample_count": len(surface_rows),
+            "distance_sample_status": self._sample_status(len(surface_rows)),
+            "exact_distance_starts": len(exact),
+            "exact_distance_top3_rate": rate(exact, 3),
+            "exact_distance_top5_rate": rate(exact, 5),
+            "near_distance_starts": len(near),
+            "near_distance_top3_rate": rate(near, 3),
+            "near_distance_top5_rate": rate(near, 5),
+            "near_distance_avg_finish_ratio": average_finish_ratio(near),
+            "near_distance_best_finish": min((item[1] for item in near), default=None),
+            "near_distance_weighted_score": near_weighted_score,
+            "near_distance_sample_status": self._sample_status(len(near)),
+            "preferred_distance_center": round(preferred_center, 2) if preferred_center is not None else None,
+            "preferred_distance_low": min(preferred_distances, default=None),
+            "preferred_distance_high": max(preferred_distances, default=None),
+            "distance_versatility": round(min(1.0, (max(preferred_distances) - min(preferred_distances)) / 1600), 6)
+            if len(preferred_distances) > 1
+            else None,
+            "distance_delta_weighted_score": distance_weighted_score,
+            "same_racecourse_near_distance_starts": len(course_near),
+            "same_racecourse_near_distance_top3_rate": rate(course_near, 3),
+            "same_racecourse_near_distance_top5_rate": rate(course_near, 5),
+            "same_racecourse_near_distance_sample_status": self._sample_status(len(course_near)),
+        }
 
     def _course_frame_bias(
         self,

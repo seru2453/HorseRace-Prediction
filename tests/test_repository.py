@@ -2,7 +2,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 
 from database.models import (
     ChallengerPrediction,
@@ -60,6 +60,44 @@ def test_repository_saves_and_reuses_past_performances(tmp_path):
     assert history[0]["race_date"] == "2026-07-12"
     assert history[0]["finish_position"] == 3
     assert history[0]["distance"] == 2000
+
+
+def test_batched_horse_histories_limit_rows_and_exclude_future(tmp_path):
+    database_url = f"sqlite:///{tmp_path}/batch-history.sqlite3"
+    factory = make_session_factory(database_url)
+    with factory() as session:
+        for horse_id in ("batch-a", "batch-b"):
+            session.add(Horse(horse_id=horse_id, horse_name=horse_id, payload={}))
+            for day in range(1, 24):
+                race_date = f"2026-08-{day:02d}"
+                session.add(
+                    PastPerformance(
+                        horse_id=horse_id,
+                        race_date=race_date,
+                        racecourse="札幌",
+                        race_name=f"race-{horse_id}-{day}",
+                        finish_position=day,
+                        payload={"race_date": race_date, "finish_position": day},
+                    )
+                )
+        session.commit()
+
+    statements = []
+    engine = factory.kw["bind"]
+    listener = lambda *args: statements.append(args[2])
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        with factory() as session:
+            result = RaceRepository(session).get_horse_histories(
+                ["batch-a", "batch-b"], limit=20, before_date="2026-08-23"
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    assert len(statements) == 1
+    assert len(result["batch-a"]) == len(result["batch-b"]) == 20
+    assert result["batch-a"][0]["race_date"] == "2026-08-22"
+    assert all(row["race_date"] < "2026-08-23" for rows in result.values() for row in rows)
 
 
 def test_analysis_reuses_db_history_when_provider_has_no_history(tmp_path):

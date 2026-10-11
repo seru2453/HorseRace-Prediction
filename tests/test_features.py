@@ -98,6 +98,37 @@ def test_track_condition_feeds_feature_generation():
     assert features[0].features["same_track_condition_top3_rate"] == 1.0
 
 
+def test_long_distance_aptitude_is_separate_from_recent_form():
+    parsed = RaceParser().parse_entries_html(Path("fixtures/jra_official_sample.html").read_text(encoding="utf-8"))
+    entry = parsed.entries[0]
+    horse_id = entry.horse.horse_id
+    recent = [
+        {"race_date": f"2026-08-{15 - index:02d}", "finish_position": 9, "field_size": 18,
+         "distance": 1600, "surface": "芝", "racecourse": "東京"}
+        for index in range(5)
+    ]
+    long_history = recent + [
+        {"race_date": f"2026-07-{20 - index:02d}", "finish_position": 2, "field_size": 16,
+         "distance": 2000, "surface": "芝", "racecourse": "札幌"}
+        for index in range(10)
+    ]
+
+    feature = FeatureGenerator().generate(
+        parsed.race,
+        [entry],
+        {horse_id: recent},
+        aptitude_histories={horse_id: long_history},
+    )[0].features
+
+    assert feature["past_5_average_finish"] == 9.0
+    assert feature["aptitude_history_count"] == 15
+    assert feature["exact_distance_starts"] == 10
+    assert feature["exact_distance_top3_rate"] == 1.0
+    assert feature["same_racecourse_near_distance_starts"] == 10
+    assert feature["preferred_distance_center"] == 2000.0
+    assert feature["near_distance_sample_status"] == "SUFFICIENT"
+
+
 def test_racecourse_feeds_feature_generation():
     parsed = RaceParser().parse_entries_html(Path("fixtures/jra_official_sample.html").read_text(encoding="utf-8"))
     parsed.race.racecourse = field("福島", 0.8, "test")
