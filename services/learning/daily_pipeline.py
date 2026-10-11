@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from database.repository import RaceRepository
-from database.session import make_session_factory
+from database.session import get_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.data_provider.base import ProviderUnavailableError, RacingDataProvider
 from services.learning.auto_review import AutomaticReviewService
@@ -19,7 +19,7 @@ class DailyRacePipeline:
     def __init__(self, provider: RacingDataProvider, database_url: str | None = None) -> None:
         self.provider = provider
         self.database_url = database_url
-        self.session_factory = make_session_factory(database_url)
+        self.session_factory = get_session_factory(database_url)
 
     def run_once(
         self,

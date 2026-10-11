@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 from statistics import mean
 
@@ -104,26 +104,31 @@ class RaceRepository:
         target_surface = str(race.surface.value or "")
         target_band = self._distance_band(race.distance.value)
         buckets: dict[tuple[str, str], list[bool]] = {}
-        historical_races = self.session.scalars(
-            select(Race).where(Race.race_date < target_date).order_by(Race.race_date)
+        historical_rows = self.session.execute(
+            select(Race, RaceResult.payload)
+            .join(RaceResult, RaceResult.race_id == Race.race_id)
+            .where(Race.race_date < target_date)
+            .order_by(Race.race_date)
         ).all()
-        for historical_race in historical_races:
-            result = self.session.get(RaceResult, historical_race.race_id)
-            if result is None:
-                continue
+        grouped_history: dict[str, tuple[Race, dict, list[RaceEntry]]] = {}
+        for historical_race, result_payload in historical_rows:
             surface = str(self._field_value(historical_race.payload or {}, "surface") or "")
             distance = self._field_value(historical_race.payload or {}, "distance")
-            if surface != target_surface or self._distance_band(distance) != target_band:
-                continue
+            if surface == target_surface and self._distance_band(distance) == target_band:
+                grouped_history[historical_race.race_id] = (historical_race, result_payload or {}, [])
+        if grouped_history:
+            historical_entries = self.session.scalars(
+                select(RaceEntry).where(RaceEntry.race_id.in_(grouped_history))
+            ).all()
+            for historical_entry in historical_entries:
+                grouped_history[historical_entry.race_id][2].append(historical_entry)
+        for historical_race, result_payload, historical_entries in grouped_history.values():
             result_by_number = {
                 int(item["horse_number"]): item
-                for item in (result.payload or {}).get("entries", [])
+                for item in (result_payload or {}).get("entries", [])
                 if item.get("horse_number") is not None
             }
-            race_entries = self.session.scalars(
-                select(RaceEntry).where(RaceEntry.race_id == historical_race.race_id)
-            ).all()
-            for historical_entry in race_entries:
+            for historical_entry in historical_entries:
                 result_entry = result_by_number.get(historical_entry.horse_number)
                 finish = result_entry.get("finish_position") if result_entry else None
                 if finish is None:
@@ -154,31 +159,38 @@ class RaceRepository:
         target_number = int(race.race_number.value)
         target_surface = str(race.surface.value or "")
         target_band = self._distance_band(race.distance.value)
-        candidates = self.session.scalars(
-            select(Race)
-            .where(Race.racecourse == target_course, Race.race_date <= target_date)
+        previous_date = (datetime.fromisoformat(target_date) - timedelta(days=1)).date().isoformat()
+        candidate_rows = self.session.execute(
+            select(Race, RaceResult.payload)
+            .join(RaceResult, RaceResult.race_id == Race.race_id)
+            .where(
+                Race.racecourse == target_course,
+                Race.race_date >= previous_date,
+                Race.race_date <= target_date,
+            )
             .order_by(Race.race_date.desc(), Race.race_number.desc())
         ).all()
+        grouped_candidates: dict[str, tuple[Race, dict, list[RaceEntry]]] = {
+            historical_race.race_id: (historical_race, result_payload or {}, [])
+            for historical_race, result_payload in candidate_rows
+        }
+        if grouped_candidates:
+            candidate_entries = self.session.scalars(
+                select(RaceEntry).where(RaceEntry.race_id.in_(grouped_candidates))
+            ).all()
+            for race_entry in candidate_entries:
+                grouped_candidates[race_entry.race_id][2].append(race_entry)
         weighted_positions: list[tuple[float, float]] = []
         same_day_index = 0
         race_samples = 0
-        for historical_race in candidates:
+        for historical_race, result_payload, race_entries in grouped_candidates.values():
             if historical_race.race_id == race.race_id:
                 continue
             if historical_race.race_date == target_date and historical_race.race_number >= target_number:
                 continue
-            if historical_race.race_date < target_date:
-                age_days = (
-                    datetime.fromisoformat(target_date) - datetime.fromisoformat(historical_race.race_date)
-                ).days
-                if age_days > 1:
-                    break
             surface = str(self._field_value(historical_race.payload or {}, "surface") or "")
             distance = self._field_value(historical_race.payload or {}, "distance")
             if surface != target_surface or self._distance_band(distance) != target_band:
-                continue
-            result = self.session.get(RaceResult, historical_race.race_id)
-            if result is None:
                 continue
             if historical_race.race_date == target_date:
                 decay = DEFAULT_STABILITY_CONFIG.track_bias_decay[
@@ -187,14 +199,9 @@ class RaceRepository:
                 same_day_index += 1
             else:
                 decay = DEFAULT_STABILITY_CONFIG.track_bias_decay[-1]
-            entries_by_number = {
-                row.horse_number: row
-                for row in self.session.scalars(
-                    select(RaceEntry).where(RaceEntry.race_id == historical_race.race_id)
-                ).all()
-            }
+            entries_by_number = {entry.horse_number: entry for entry in race_entries}
             used = False
-            for result_entry in (result.payload or {}).get("entries", []):
+            for result_entry in (result_payload or {}).get("entries", []):
                 finish = result_entry.get("finish_position")
                 if finish is None or int(finish) > 3:
                     continue
@@ -1667,6 +1674,36 @@ class RaceRepository:
         rows = self.session.scalars(statement.order_by(PastPerformance.race_date.desc()).limit(limit)).all()
         return [row.payload for row in rows]
 
+    def get_horse_histories(
+        self,
+        horse_ids: list[str],
+        limit: int = 20,
+        before_date: str | None = None,
+    ) -> dict[str, list[dict]]:
+        unique_horse_ids = set(horse_ids)
+        if not unique_horse_ids:
+            return {}
+        ranking = func.row_number().over(
+            partition_by=PastPerformance.horse_id,
+            order_by=(PastPerformance.race_date.desc(), PastPerformance.id.desc()),
+        ).label("history_rank")
+        statement = select(PastPerformance.id.label("performance_id"), ranking).where(
+            PastPerformance.horse_id.in_(unique_horse_ids)
+        )
+        if before_date:
+            statement = statement.where(PastPerformance.race_date < before_date)
+        ranked = statement.subquery()
+        rows = self.session.scalars(
+            select(PastPerformance)
+            .join(ranked, ranked.c.performance_id == PastPerformance.id)
+            .where(ranked.c.history_rank <= max(1, int(limit)))
+            .order_by(PastPerformance.horse_id, PastPerformance.race_date.desc(), PastPerformance.id.desc())
+        ).all()
+        histories: dict[str, list[dict]] = {horse_id: [] for horse_id in unique_horse_ids}
+        for row in rows:
+            histories[row.horse_id].append(row.payload or {})
+        return histories
+
     def learning_summary(self, eligible_only: bool = False) -> dict:
         reviews = self._latest_reviews_by_race()
         if eligible_only:
@@ -1758,9 +1795,13 @@ class RaceRepository:
         }
 
     def active_factor_adjustments(self) -> dict[str, float]:
-        summary = self.learning_summary(eligible_only=True)
+        reviews = self._eligible_reviews_for_learning(self._latest_reviews_by_race())
+        payloads = [row.payload or {} for row in reviews]
+        factor_attribution = self._factor_attribution_summary(payloads)
+        factor_calibration = self._factor_calibration_summary(payloads)
+        recommendations = self._factor_weight_recommendations(factor_attribution, factor_calibration)
         adjustments: dict[str, float] = {}
-        for row in summary.get("factor_weight_recommendations") or []:
+        for row in recommendations:
             if row.get("readiness") != "candidate":
                 continue
             if row.get("deployment_status") != "champion":
@@ -1775,10 +1816,21 @@ class RaceRepository:
         return adjustments
 
     def _eligible_reviews_for_learning(self, reviews: list[PredictionReview]) -> list[PredictionReview]:
-        eligible = []
-        for review in reviews:
-            race = self.session.get(Race, review.race_id)
-            if race is None:
+        race_ids = {review.race_id for review in reviews}
+        if not race_ids:
+            return []
+        races = {
+            race.race_id: race
+            for race in self.session.scalars(select(Race).where(Race.race_id.in_(race_ids))).all()
+        }
+        eligible_race_ids: set[str] = set()
+        snapshots = self.session.execute(
+            select(PredictionSnapshot.race_id, PredictionSnapshot.prediction_timestamp)
+            .where(PredictionSnapshot.race_id.in_(race_ids))
+        ).all()
+        for race_id, prediction_timestamp in snapshots:
+            race = races.get(race_id)
+            if race is None or race_id in eligible_race_ids:
                 continue
             payload = race.payload or {}
             if not is_supported_flat_race(
@@ -1786,21 +1838,13 @@ class RaceRepository:
                 self._field_value(payload, "race_class"),
             ):
                 continue
-            snapshots = self.session.scalars(
-                select(PredictionSnapshot)
-                .where(PredictionSnapshot.race_id == review.race_id)
-                .order_by(PredictionSnapshot.prediction_timestamp.desc(), PredictionSnapshot.id.desc())
-            ).all()
-            if any(
-                (prediction_lead_minutes(
-                    race.race_date,
-                    self._field_value(payload, "start_time"),
-                    snapshot.prediction_timestamp,
-                ) or 0) > 0
-                for snapshot in snapshots
-            ):
-                eligible.append(review)
-        return eligible
+            if (prediction_lead_minutes(
+                race.race_date,
+                self._field_value(payload, "start_time"),
+                prediction_timestamp,
+            ) or 0) > 0:
+                eligible_race_ids.add(race_id)
+        return [review for review in reviews if review.race_id in eligible_race_ids]
 
     def _latest_reviews_by_race(self) -> list[PredictionReview]:
         rows = self.session.scalars(

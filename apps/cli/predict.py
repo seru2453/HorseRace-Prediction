@@ -29,6 +29,7 @@ from services.ml.baseline import (
     TrainingConfig,
     evaluate_challenger_dataset,
 )
+from services.ml.artifacts import save_logistic_artifact
 
 
 def provider_for_mode(mode: str):
@@ -215,6 +216,8 @@ def format_baseline_training_result(result: dict) -> str:
             "Top positive coefficients:",
         ]
     )
+    if result.get("model_artifact"):
+        lines.append(f"保存モデル: {result['model_artifact']}")
     lines.extend(f"- {row['feature']}: {row['coefficient']}" for row in result.get("top_positive_coefficients") or [])
     lines.append("Top negative coefficients:")
     lines.extend(f"- {row['feature']}: {row['coefficient']}" for row in result.get("top_negative_coefficients") or [])
@@ -434,7 +437,7 @@ def train_baseline(args: argparse.Namespace) -> int:
     trainer = LogisticBaselineTrainer(
         TrainingConfig(label=args.train_label, min_rows=args.min_train_rows, min_races=args.min_train_races)
     )
-    result = trainer.train(dataset)
+    result, trained_model = trainer.fit(dataset)
     evaluation_with_jev = evaluate_challenger_dataset(dataset, include_jev=True)
     evaluation_without_jev = evaluate_challenger_dataset(dataset, include_jev=False)
     result["temporal_evaluation"] = evaluation_with_jev
@@ -470,6 +473,12 @@ def train_baseline(args: argparse.Namespace) -> int:
             evaluation_without_jev,
             run.id,
         )
+    if trained_model is not None and result.get("status") == "trained_in_sample":
+        result["model_artifact"] = str(
+            save_logistic_artifact(trained_model, args.train_label, feature_version, result)
+        )
+    else:
+        result["model_artifact"] = None
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
