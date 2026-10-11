@@ -1,6 +1,7 @@
 import pytest
 
 from apps.api.flask_app import create_app
+from services.common.models import RaceScheduleItem
 
 
 def test_history_and_learning_available_before_analysis(tmp_path, monkeypatch):
@@ -104,6 +105,7 @@ def test_public_mode_blocks_admin_and_upstream_fetch_routes(tmp_path, monkeypatc
         client.post("/api/import", json={"format_version": "horseprediction-export-v1", "data": {}}),
         client.post("/api/provider-diagnostics", json={"mode": "jra"}),
         client.post("/api/result-diagnostics/unknown", json={"mode": "jra"}),
+        client.get("/api/schedule?date=2026-08-30"),
     ):
         assert response.status_code == 404
         assert response.get_json()["ok"] is False
@@ -146,6 +148,40 @@ def test_public_mode_returns_saved_analysis_without_fetching(tmp_path, monkeypat
     assert all("raw_features" not in row for row in detail["latest_snapshots"])
 
 
+def test_schedule_api_groups_courses_and_hides_provider_urls(tmp_path, monkeypatch):
+    from services.data_provider.jra_official import JraOfficialProvider
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/schedule.sqlite3")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    items = [
+        RaceScheduleItem(
+            race_date="2026-08-30", racecourse="東京", race_number=2, start_time="10:35", source_url="https://www.jra.go.jp/private"
+        ),
+        RaceScheduleItem(race_date="2026-08-30", racecourse="京都", race_number=1, start_time="09:55"),
+        RaceScheduleItem(race_date="2026-08-30", racecourse="東京", race_number=1, start_time="10:05", race_type="obstacle"),
+    ]
+    monkeypatch.setattr(JraOfficialProvider, "list_races", lambda _self, race_date: items if race_date == "2026-08-30" else [])
+    client = create_app().test_client()
+
+    response = client.get("/api/schedule?date=2026-08-30")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "race_date": "2026-08-30",
+        "racecourses": [
+            {"name": "京都", "races": [{"race_number": 1, "start_time": "09:55", "race_type": "flat"}]},
+            {
+                "name": "東京",
+                "races": [
+                    {"race_number": 1, "start_time": "10:05", "race_type": "obstacle"},
+                    {"race_number": 2, "start_time": "10:35", "race_type": "flat"},
+                ],
+            },
+        ],
+    }
+    assert client.get("/api/schedule?date=2026-02-30").status_code == 400
+
+
 def test_fastapi_public_mode_uses_the_same_public_boundary(tmp_path, monkeypatch):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -170,6 +206,7 @@ def test_fastapi_public_mode_uses_the_same_public_boundary(tmp_path, monkeypatch
         client.post("/api/import", json={"format_version": "horseprediction-export-v1", "data": {}}),
         client.post("/api/provider-diagnostics", json={"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11}),
         client.post("/api/result-diagnostics/not-saved", json={}),
+        client.get("/api/schedule?date=2026-08-30"),
     ):
         assert response.status_code == 404
         assert response.json()["ok"] is False
@@ -190,6 +227,18 @@ def test_fastapi_public_mode_uses_the_same_public_boundary(tmp_path, monkeypatch
     snapshots = client.get(f"/api/prediction-snapshots/{race_id}?limit=100").json()["snapshots"]
     assert 0 < len(snapshots) <= 20
     assert all("raw_features" not in row for row in snapshots)
+
+    items = [
+        RaceScheduleItem(race_date="2026-08-30", racecourse="東京", race_number=1, start_time="10:05", race_type="obstacle"),
+    ]
+    monkeypatch.setattr(JraOfficialProvider, "list_races", lambda _self, _race_date: items)
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    schedule = client.get("/api/schedule?date=2026-08-30")
+    assert schedule.status_code == 200
+    assert schedule.json() == {
+        "race_date": "2026-08-30",
+        "racecourses": [{"name": "東京", "races": [{"race_number": 1, "start_time": "10:05", "race_type": "obstacle"}]}],
+    }
 
 
 def test_review_does_not_recompute_prediction_after_result(tmp_path, monkeypatch):

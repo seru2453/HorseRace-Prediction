@@ -16,6 +16,7 @@ from database.session import make_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.common.models import RaceResultData, RaceResultEntryData, UserPredictionInput
 from services.common.deployment import deployment_mode, is_public_deployment
+from services.common.schedule import schedule_response, validate_schedule_date
 from services.data_provider.base import ProviderUnavailableError
 from services.data_provider.jra_official import JraOfficialProvider
 from services.data_provider.mock import MockProvider
@@ -66,6 +67,19 @@ def create_app() -> Flask:
     @app.get("/api/config")
     def public_config():
         return jsonify({"deployment_mode": deployment_mode()})
+
+    @app.get("/api/schedule")
+    def race_schedule():
+        if is_public_deployment():
+            return local_only_response()
+        try:
+            race_date = validate_schedule_date(request.args.get("date"))
+            items = JraOfficialProvider().list_races(race_date)
+        except ValueError as exc:
+            return jsonify({"ok": False, "message": str(exc)}), 400
+        except ProviderUnavailableError as exc:
+            return jsonify({"ok": False, "message": str(exc)}), 503
+        return jsonify(schedule_response(race_date, items))
 
     def local_only_response():
         return jsonify({"ok": False, "message": "この機能はローカルモードでのみ利用できます。"}), 404
