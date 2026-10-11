@@ -23,6 +23,8 @@
 - Timeout and minimum interval between network fetches.
 - No CAPTCHA bypass, login automation, private API discovery, or bulk crawling.
 
+`DEPLOYMENT_MODE=local` (the default) enables the existing interactive provider and local backup tools. In `DEPLOYMENT_MODE=public`, browser analysis and result requests only return saved records; provider diagnostics, export, import, and training-data endpoints are unavailable. The JRA HTML cache remains under `data/cache/jra_official`, outside both web static roots.
+
 Live race-card mode was smoke-tested against `2026-08-16 札幌 11R`. Live result mode was smoke-tested against `2026-08-08 札幌 11R`. If the requested race is not listed, not yet published, already removed, not finalized, or the official HTML structure changes, the provider reports unavailable rather than trying bypasses.
 
 For emergency manual operation, `JRA_RACE_URL_INDEX` can point to a JSON file keyed as `YYYY-MM-DD|競馬場|R番号` with a full public race-card URL.

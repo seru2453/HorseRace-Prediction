@@ -15,10 +15,11 @@
         <div>
           <h1>競馬予想支援</h1>
           <p>JRA レース分析</p>
+          <p class="service-disclaimer">本アプリはJRA公式サービスではありません。</p>
         </div>
         <div class="header-actions">
           <button id="open-history" class="secondary-button compact-button" type="button">履歴</button>
-          <details class="utility-menu">
+          <details id="local-admin-tools" class="utility-menu hidden">
             <summary title="その他の操作">その他</summary>
             <div class="utility-menu-panel">
               <button id="diagnose-provider" class="secondary-button" type="button">取得診断</button>
@@ -30,8 +31,8 @@
       </header>
       <form id="race-form" class="race-form">
         <label>開催日<input id="race-date" type="date" required></label>
-        <label>競馬場<select id="racecourse"><option>札幌</option><option>函館</option><option>福島</option><option>新潟</option><option>東京</option><option>中山</option><option>中京</option><option>京都</option><option>阪神</option><option>小倉</option></select></label>
-        <label>レース番号<select id="race-number"></select></label>
+        <label>競馬場<select id="racecourse" required><option value="">開催情報を読み込み中</option></select></label>
+        <label>レース番号<select id="race-number" required><option value="">--</option></select></label>
         <button class="analyze-button" type="submit">分析開始</button>
         <input id="import-file" class="hidden" type="file" accept="application/json">
       </form>
