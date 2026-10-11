@@ -7,6 +7,7 @@ from pathlib import Path
 
 try:
     from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without optional FastAPI deps
@@ -20,6 +21,7 @@ from database.repository import RaceRepository
 from database.session import make_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
 from services.common.models import RaceResultData, RaceResultEntryData, UserPredictionInput
+from services.common.deployment import deployment_mode, is_public_deployment
 from services.data_provider.base import ProviderUnavailableError
 from services.data_provider.jra_official import JraOfficialProvider
 from services.data_provider.mock import MockProvider
@@ -59,8 +61,65 @@ def provider_for_mode(mode: str):
     return JraOfficialProvider() if mode == "jra" else MockProvider()
 
 
+def _local_only_response():
+    return JSONResponse(
+        status_code=404,
+        content={"ok": False, "message": "この機能はローカルモードでのみ利用できます。"},
+    )
+
+
+def _not_prepared_response():
+    return JSONResponse(
+        status_code=503,
+        content={
+            "ok": False,
+            "message": "このレースの保存済み分析はありません。管理された取得処理の完了後に利用できます。",
+            "prepared": False,
+        },
+    )
+
+
+def _saved_analysis_for(race_date: str, racecourse: str, race_number: int) -> dict | None:
+    with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+        repo = RaceRepository(session)
+        race_id = repo.predicted_race_id(race_date, racecourse, race_number)
+        return repo.race_detail(race_id) if race_id else None
+
+
+def _saved_analysis_payload(detail: dict) -> dict:
+    analysis_run = detail.get("latest_analysis_run") or {}
+    analysis_payload = analysis_run.get("payload") or {}
+    return {
+        "race": detail["race"],
+        "entries": detail.get("entries") or [],
+        "predictions": detail.get("latest_predictions") or [],
+        "simulation": detail.get("latest_simulation"),
+        "parse_quality": analysis_payload.get("parse_quality"),
+        "provider_name": analysis_run.get("provider_name"),
+        "latest_user_predictions": detail.get("latest_user_predictions") or {},
+        "result": detail.get("result"),
+        "result_source": detail.get("result_source"),
+        "message": "発走前に保存した分析を表示しています。",
+        "restored_from_saved": True,
+    }
+
+
+def _public_snapshot(snapshot: dict) -> dict:
+    return {key: value for key, value in snapshot.items() if key != "raw_features"}
+
+
+@app.get("/api/config")
+def public_config():
+    return {"deployment_mode": deployment_mode()}
+
+
 @app.post("/api/analyze")
 def analyze(payload: AnalyzePayload):
+    if is_public_deployment():
+        detail = _saved_analysis_for(payload.race_date, payload.racecourse, payload.race_number)
+        if detail and detail.get("latest_analysis_run") and detail.get("latest_predictions"):
+            return _saved_analysis_payload(detail)
+        return _not_prepared_response()
     service = RaceAnalysisService(provider=provider_for_mode(payload.mode), database_url=os.getenv("DATABASE_URL"))
     try:
         result = service.analyze(
@@ -87,6 +146,8 @@ def analyze(payload: AnalyzePayload):
 
 @app.post("/api/provider-diagnostics")
 def provider_diagnostics(payload: AnalyzePayload):
+    if is_public_deployment():
+        return _local_only_response()
     provider = provider_for_mode(payload.mode)
     try:
         race = provider.get_race(payload.race_date, payload.racecourse, payload.race_number)
@@ -112,6 +173,12 @@ def save_user_predictions(race_id: str, payload: UserPredictionPayload):
 
 @app.post("/api/results/{race_id}")
 def update_results(race_id: str, payload: ResultPayload):
+    if is_public_deployment():
+        with make_session_factory(os.getenv("DATABASE_URL"))() as session:
+            result, source = RaceRepository(session).saved_result(race_id)
+        if result is None:
+            return _not_prepared_response()
+        return {"ok": True, "result": result, "result_source": f"saved_{source}" if source else "saved"}
     try:
         result = provider_for_mode(payload.mode).get_race_results(race_id)
     except (ProviderUnavailableError, ValueError) as exc:
@@ -125,6 +192,8 @@ def update_results(race_id: str, payload: ResultPayload):
 
 @app.post("/api/result-diagnostics/{race_id}")
 def result_diagnostics(race_id: str, payload: ResultPayload):
+    if is_public_deployment():
+        return _local_only_response()
     try:
         result = provider_for_mode(payload.mode).get_race_results(race_id)
     except (ProviderUnavailableError, ValueError) as exc:
@@ -153,6 +222,8 @@ def save_manual_result(race_id: str, payload: dict):
 
 @app.post("/api/review/{race_id}")
 def review(race_id: str, payload: ResultPayload):
+    if is_public_deployment() and not (payload.result or payload.use_saved_result):
+        return _not_prepared_response()
     provider = provider_for_mode(payload.mode)
     result_source = "provider"
     if payload.result:
@@ -201,12 +272,19 @@ def learning():
 
 @app.get("/api/prediction-snapshots/{race_id}")
 def prediction_snapshots(race_id: str, limit: int = 50):
+    if is_public_deployment():
+        limit = max(1, min(limit, 20))
     with make_session_factory(os.getenv("DATABASE_URL"))() as session:
-        return {"race_id": race_id, "snapshots": RaceRepository(session).prediction_snapshots(race_id, limit)}
+        snapshots = RaceRepository(session).prediction_snapshots(race_id, limit)
+    if is_public_deployment():
+        snapshots = [_public_snapshot(row) for row in snapshots]
+    return {"race_id": race_id, "snapshots": snapshots}
 
 
 @app.get("/api/races")
 def races(limit: int = 20, racecourse: str | None = None, has_result: bool | None = None, has_review: bool | None = None):
+    if is_public_deployment():
+        limit = max(1, min(limit, 50))
     with make_session_factory(os.getenv("DATABASE_URL"))() as session:
         return {"races": RaceRepository(session).race_history(limit, racecourse, has_result, has_review)}
 
@@ -217,23 +295,31 @@ def race_detail(race_id: str):
         detail = RaceRepository(session).race_detail(race_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="保存済みレースが見つかりません。")
+    if is_public_deployment():
+        detail["latest_snapshots"] = [_public_snapshot(row) for row in detail.get("latest_snapshots") or []]
     return detail
 
 
 @app.get("/api/export")
 def export_data():
+    if is_public_deployment():
+        return _local_only_response()
     with make_session_factory(os.getenv("DATABASE_URL"))() as session:
         return RaceRepository(session).export_data()
 
 
 @app.get("/api/training-dataset")
 def training_dataset():
+    if is_public_deployment():
+        return _local_only_response()
     with make_session_factory(os.getenv("DATABASE_URL"))() as session:
         return RaceRepository(session).training_dataset()
 
 
 @app.post("/api/import")
 def import_data(payload: dict):
+    if is_public_deployment():
+        return _local_only_response()
     try:
         with make_session_factory(os.getenv("DATABASE_URL"))() as session:
             result = RaceRepository(session).import_data(payload)

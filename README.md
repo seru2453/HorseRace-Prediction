@@ -19,6 +19,8 @@ make dev
 
 Open `http://localhost:8000`.
 
+`DEPLOYMENT_MODE=local` (default) keeps the local export/import and live provider features available. Set `DEPLOYMENT_MODE=public` to hide local administration controls and restrict public requests to saved analysis/results; public requests do not trigger upstream JRA fetches. Public mode is a deployment boundary, not an authentication system.
+
 ## Docker
 
 ```bash

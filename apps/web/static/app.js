@@ -11,6 +11,7 @@ const openHistoryButton = document.querySelector("#open-history");
 const exportDataButton = document.querySelector("#export-data");
 const importDataButton = document.querySelector("#import-data");
 const diagnoseProviderButton = document.querySelector("#diagnose-provider");
+const localAdminTools = document.querySelector("#local-admin-tools");
 const importFile = document.querySelector("#import-file");
 let current = null;
 const LAST_ANALYSIS_KEY = "horseprediction:last-analysis";
@@ -29,6 +30,23 @@ const todayValue = [
   String(today.getDate()).padStart(2, "0")
 ].join("-");
 raceDate.value = todayValue;
+
+loadDeploymentConfig();
+
+async function loadDeploymentConfig() {
+  try {
+    const response = await fetch("/api/config");
+    if (!response.ok) return;
+    const config = await response.json();
+    if (config.deployment_mode === "local") {
+      localAdminTools.classList.remove("hidden");
+      return;
+    }
+    analyzeButton.textContent = "保存済み分析を表示";
+  } catch {
+    // Keep administration controls hidden unless the server confirms local mode.
+  }
+}
 
 for (let i = 1; i <= 12; i += 1) {
   const option = document.createElement("option");
