@@ -25,6 +25,8 @@ Open `http://localhost:8000`.
 
 macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開きます。Macの電源が切れている場合やログインしていない場合は起動しません。
 
+LaunchAgentは `Weekday=6` で土曜日を指定し、起動スクリプトの終了後も `make dev` が動き続ける設定で登録されます。
+
 ```bash
 scripts/install_macos_autostart.sh
 ```
