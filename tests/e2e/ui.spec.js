@@ -81,6 +81,8 @@ test("analysis is visual and reload restores the race and tab", async ({ page },
 
   const predictions = page.locator("#analysis .prediction");
   await expect(predictions.first()).toBeVisible();
+  await expect(page.locator("#tabs .app-icon")).toHaveCount(6);
+  await expect(page.locator("#tabs .app-icon").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "分析開始" })).toBeEnabled();
   expect(await predictions.count()).toBe(await page.locator("#entries .row").count());
   await expect(page.locator(".tabs button.active")).toHaveText("AI予想");
@@ -211,17 +213,52 @@ test("race selection follows the daily schedule and falls back to manual options
 
 test("local admin actions are available from the compact accessible dot menu", async ({ page }) => {
   await page.goto("/");
+  await expect(page.locator(".field-caption .app-icon")).toHaveCount(3);
+  await expect(page.locator(".race-form-heading .app-icon")).toBeVisible();
+  await expect(page.locator("#open-history .app-icon")).toBeVisible();
+  await expect(page.locator(".app-mascot")).toBeVisible();
+  await expect.poll(() => page.locator(".app-mascot").evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator("#race-form")).toHaveClass(/nes-container/);
+  await expect(page.locator("#open-history")).toHaveClass(/nes-btn/);
 
   const menu = page.locator("#local-admin-tools");
   const trigger = menu.locator("summary");
-  await expect(trigger).toHaveText("•••");
+  await expect(trigger.locator(".pixel-menu-icon")).toBeVisible();
+  await expect(trigger).toHaveText("");
   await expect(trigger).toHaveAttribute("aria-label", "その他の操作");
   await expect(trigger).toHaveAttribute("title", "その他の操作");
   await expect(trigger).toBeVisible();
   await expect.poll(async () => (await trigger.boundingBox())?.width).toBe(44);
+  await expect.poll(async () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await trigger.click();
   await expect(menu.getByRole("button", {name: "取得診断"})).toBeVisible();
   await expect(menu.getByRole("button", {name: "データ出力"})).toBeVisible();
   await expect(menu.getByRole("button", {name: "データ読込"})).toBeVisible();
+  await expect(menu.locator(".admin-action-icon")).toHaveCount(3);
+});
+
+test("light and dark themes keep the race form legible", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => document.fonts.load('16px "DotGothic16"'));
+  await expect.poll(() => page.evaluate(() => document.fonts.check('16px "DotGothic16"'))).toBe(true);
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f2f5e9");
+  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(255, 254, 247)");
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#121a16");
+  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(32, 43, 36)");
+});
+
+test("mobile layout and admin menu fit a 320px viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/");
+  await expect.poll(async () => page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
+
+  const menu = page.locator("#local-admin-tools");
+  await menu.locator("summary").click();
+  const panel = await menu.locator(".utility-menu-panel").boundingBox();
+  expect(panel).not.toBeNull();
+  expect(panel.x).toBeGreaterThanOrEqual(0);
+  expect(panel.x + panel.width).toBeLessThanOrEqual(320);
 });
