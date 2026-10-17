@@ -236,12 +236,12 @@ test("local admin actions are available from the compact accessible dot menu", a
 
 test("light and dark themes keep the race form legible", async ({ page }) => {
   await page.goto("/");
-  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f7faf8");
-  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f2f5e9");
+  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(255, 254, 247)");
 
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#111513");
-  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(26, 33, 30)");
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#121a16");
+  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(32, 43, 36)");
 });
 
 test("mobile layout and admin menu fit a 320px viewport", async ({ page }) => {
