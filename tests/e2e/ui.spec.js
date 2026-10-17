@@ -208,3 +208,20 @@ test("race selection follows the daily schedule and falls back to manual options
   await expect(page.locator("#racecourse option")).toHaveCount(10);
   await expect(page.locator("#race-number option")).toHaveCount(12);
 });
+
+test("local admin actions are available from the compact accessible dot menu", async ({ page }) => {
+  await page.goto("/");
+
+  const menu = page.locator("#local-admin-tools");
+  const trigger = menu.locator("summary");
+  await expect(trigger).toHaveText("•••");
+  await expect(trigger).toHaveAttribute("aria-label", "その他の操作");
+  await expect(trigger).toHaveAttribute("title", "その他の操作");
+  await expect(trigger).toBeVisible();
+  await expect.poll(async () => (await trigger.boundingBox())?.width).toBe(44);
+
+  await trigger.click();
+  await expect(menu.getByRole("button", {name: "取得診断"})).toBeVisible();
+  await expect(menu.getByRole("button", {name: "データ出力"})).toBeVisible();
+  await expect(menu.getByRole("button", {name: "データ読込"})).toBeVisible();
+});
