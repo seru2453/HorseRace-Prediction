@@ -21,6 +21,31 @@ Open `http://localhost:8000`.
 
 `DEPLOYMENT_MODE=local` (default) keeps the local export/import and live provider features available. Set `DEPLOYMENT_MODE=public` to hide local administration controls and restrict public requests to saved analysis/results; public requests do not trigger upstream JRA fetches. Public mode is a deployment boundary, not an authentication system.
 
+## 毎週土曜9:40の自動起動（macOS）
+
+macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開きます。Macの電源が切れている場合やログインしていない場合は起動しません。
+
+LaunchAgentは `Weekday=6` で土曜日を指定し、起動スクリプトの終了後も `make dev` が動き続ける設定で登録されます。
+
+```bash
+scripts/install_macos_autostart.sh
+```
+
+登録内容は `~/Library/LaunchAgents/com.horserace.saturday.plist` に生成されます。スクリプトはリポジトリ位置からアプリを起動するため、ユーザー固有のパスをリポジトリへ書き込む必要はありません。手動で動作を確認する場合は次を実行します。
+
+```bash
+scripts/open_keiba.sh
+```
+
+アプリが応答済みならサーバーを増やさずブラウザだけを開きます。起動直後は `/api/config` の応答を最大120秒待ちます。自動起動のログは `/tmp/horse-race-saturday.log`、アプリのログは `/tmp/horse-race-app.log` です。アプリ側の定期処理は `make dev` に含まれるため、別途 `make worker` を起動しないでください。
+
+自動起動を解除する場合:
+
+```bash
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.horserace.saturday.plist"
+rm "$HOME/Library/LaunchAgents/com.horserace.saturday.plist"
+```
+
 ## Docker
 
 ```bash
