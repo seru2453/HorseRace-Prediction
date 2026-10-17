@@ -1,9 +1,12 @@
-const CACHE = "horseprediction-mvp-v56";
+const CACHE = "horseprediction-mvp-v57";
 const ASSETS = [
   "/",
   "/styles.css",
+  "/vendor/nes.min.css",
   "/app.js",
   "/manifest.webmanifest",
+  "/fonts/DotGothic16-Regular.ttf",
+  "/mascots/turf-scout.svg",
   "/icons/more-horizontal.svg",
   "/icons/search.svg",
   "/icons/download.svg",

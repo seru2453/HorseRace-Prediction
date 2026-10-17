@@ -381,8 +381,8 @@ function renderSimulation() {
 function renderUserPredictions() {
   document.querySelector("#user").innerHTML = `
     <article class="row">
-      <button id="save-user" class="has-icon">${iconMarkup("pixel", "star")}<span>予想を保存</span></button>
-      <button id="draft-ai-user" class="secondary-button has-icon" type="button">${iconMarkup("pixel", "sparkles")}<span>AI下書き反映</span></button>
+      <button id="save-user" class="nes-btn is-success has-icon">${iconMarkup("pixel", "star")}<span>予想を保存</span></button>
+      <button id="draft-ai-user" class="nes-btn secondary-button has-icon" type="button">${iconMarkup("pixel", "sparkles")}<span>AI下書き反映</span></button>
       <div class="meta">自分の印だけを保存します。</div>
     </article>
     <article id="user-quality" class="row"></article>
@@ -418,9 +418,9 @@ function renderReview() {
   document.querySelector("#review").innerHTML = `
     ${resultStatusMarkup()}
     <article class="row">
-      <button id="fetch-result" class="has-icon" type="button">${iconMarkup("pixel", "download")}<span>結果を取得</span></button>
-      <button id="update-result" class="has-icon">${iconMarkup("pixel", "refresh")}<span>結果を更新してレビュー</span></button>
-      <button id="review-saved-result" class="secondary-button has-icon" type="button">${iconMarkup("hn", "clipboard")}<span>保存済み結果でレビュー</span></button>
+      <button id="fetch-result" class="nes-btn is-success has-icon" type="button">${iconMarkup("pixel", "download")}<span>結果を取得</span></button>
+      <button id="update-result" class="nes-btn is-success has-icon">${iconMarkup("pixel", "refresh")}<span>結果を更新してレビュー</span></button>
+      <button id="review-saved-result" class="nes-btn secondary-button has-icon" type="button">${iconMarkup("hn", "clipboard")}<span>保存済み結果でレビュー</span></button>
     </article>
     <div id="result-grid" class="result-grid">${resultEntriesMarkup()}</div>
     <div id="review-output"></div>
@@ -1126,7 +1126,11 @@ function clearError() { errorBox.classList.add("hidden"); }
 function selectTab(tabId) {
   const tabButtons = [...document.querySelectorAll(".tabs button")];
   const resolvedTabId = tabButtons.some((item) => item.dataset.tab === tabId) ? tabId : "analysis";
-  tabButtons.forEach((item) => item.classList.toggle("active", item.dataset.tab === resolvedTabId));
+  tabButtons.forEach((item) => {
+    const isActive = item.dataset.tab === resolvedTabId;
+    item.classList.toggle("active", isActive);
+    item.classList.toggle("is-success", isActive);
+  });
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("hidden", panel.id !== resolvedTabId));
   saveUiState();
   if (resolvedTabId === "review") refreshCurrentSavedResult();

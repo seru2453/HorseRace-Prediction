@@ -216,6 +216,10 @@ test("local admin actions are available from the compact accessible dot menu", a
   await expect(page.locator(".field-caption .app-icon")).toHaveCount(3);
   await expect(page.locator(".race-form-heading .app-icon")).toBeVisible();
   await expect(page.locator("#open-history .app-icon")).toBeVisible();
+  await expect(page.locator(".app-mascot")).toBeVisible();
+  await expect.poll(() => page.locator(".app-mascot").evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator("#race-form")).toHaveClass(/nes-container/);
+  await expect(page.locator("#open-history")).toHaveClass(/nes-btn/);
 
   const menu = page.locator("#local-admin-tools");
   const trigger = menu.locator("summary");
@@ -236,6 +240,8 @@ test("local admin actions are available from the compact accessible dot menu", a
 
 test("light and dark themes keep the race form legible", async ({ page }) => {
   await page.goto("/");
+  await page.evaluate(() => document.fonts.load('16px "DotGothic16"'));
+  await expect.poll(() => page.evaluate(() => document.fonts.check('16px "DotGothic16"'))).toBe(true);
   await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f2f5e9");
   await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(255, 254, 247)");
 

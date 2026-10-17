@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "DotGothic16";
+  src: url("/fonts/DotGothic16-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
   --bg: #f2f5e9;
@@ -39,7 +47,7 @@ body {
   background-image: linear-gradient(rgb(93 122 91 / 5%) 1px, transparent 1px), linear-gradient(90deg, rgb(93 122 91 / 5%) 1px, transparent 1px);
   background-size: 24px 24px;
   color: var(--text);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "DotGothic16", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
 }
 
@@ -86,7 +94,7 @@ h1 {
   font-size: 1.45rem;
   letter-spacing: 0;
 }
-h1::before { content: ""; width: 20px; height: 20px; flex: 0 0 20px; background: var(--accent); clip-path: polygon(0 0, 40% 0, 40% 20%, 80% 20%, 80% 40%, 100% 40%, 100% 100%, 0 100%); image-rendering: pixelated; }
+.app-mascot { display: block; width: 56px; height: 56px; flex: 0 0 56px; image-rendering: pixelated; }
 
 .app-header p {
   margin: 2px 0 0;
@@ -245,6 +253,11 @@ button:disabled { cursor: wait; opacity: .75; }
   mask-size: contain;
 }
 .app-icon { -webkit-mask-position: center; -webkit-mask-repeat: no-repeat; -webkit-mask-size: contain; mask-position: center; mask-repeat: no-repeat; mask-size: contain; }
+.nes-container, .nes-btn, .nes-field, .nes-input, .nes-select, .nes-dialog { font-family: inherit; }
+.nes-btn { font-size: inherit; line-height: 1.25; }
+.nes-btn.is-success { background-color: var(--accent); color: #fff; }
+.nes-btn.is-success:hover { background-color: var(--accent-strong); }
+.nes-container { color: var(--text); }
 .icon-pixel-calendar { -webkit-mask-image: url("/icons/pixel-calendar.svg"); mask-image: url("/icons/pixel-calendar.svg"); }
 .icon-pixel-map { -webkit-mask-image: url("/icons/pixel-map.svg"); mask-image: url("/icons/pixel-map.svg"); }
 .icon-pixel-target { -webkit-mask-image: url("/icons/pixel-target.svg"); mask-image: url("/icons/pixel-target.svg"); }
@@ -330,6 +343,8 @@ button:disabled { cursor: wait; opacity: .75; }
 .race-condition::before { content: ""; display: inline-block; width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px; background: currentColor; -webkit-mask: url("/icons/hackernoon-flag.svg") center / contain no-repeat; mask: url("/icons/hackernoon-flag.svg") center / contain no-repeat; }
 .race-summary-main + .meta { display: flex; align-items: center; gap: 6px; }
 .race-summary-main + .meta::before { content: ""; display: inline-block; width: 16px; height: 16px; background: currentColor; -webkit-mask: url("/icons/hackernoon-calendar-alt.svg") center / contain no-repeat; mask: url("/icons/hackernoon-calendar-alt.svg") center / contain no-repeat; }
+dialog, .nes-dialog { max-width: min(92vw, 560px); border-color: var(--text); background: var(--panel); color: var(--text); font-family: inherit; box-shadow: var(--shadow); }
+dialog::backdrop { background: rgb(10 17 12 / 58%); }
 
 .summary,
 .progress,
@@ -460,13 +475,16 @@ button:disabled { cursor: wait; opacity: .75; }
 @media (max-width: 480px) {
   .shell { padding: 16px 12px 44px; }
   .app-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: start;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
   }
+  .app-header > div:first-child { flex: 1 1 100%; }
   .header-actions { gap: 7px; }
-  h1 { font-size: 1.18rem; }
+  .header-actions { margin-left: auto; }
+  h1 { gap: 7px; font-size: 1.08rem; }
+  .app-mascot { width: 40px; height: 40px; flex-basis: 40px; }
   .prediction { grid-template-columns: 40px minmax(0, 1fr); }
   .prediction-body { padding: 11px 10px; }
   .prediction-rank { min-height: 150px; }
