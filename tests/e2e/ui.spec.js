@@ -81,6 +81,8 @@ test("analysis is visual and reload restores the race and tab", async ({ page },
 
   const predictions = page.locator("#analysis .prediction");
   await expect(predictions.first()).toBeVisible();
+  await expect(page.locator("#tabs .app-icon")).toHaveCount(6);
+  await expect(page.locator("#tabs .app-icon").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "分析開始" })).toBeEnabled();
   expect(await predictions.count()).toBe(await page.locator("#entries .row").count());
   await expect(page.locator(".tabs button.active")).toHaveText("AI予想");
@@ -211,6 +213,9 @@ test("race selection follows the daily schedule and falls back to manual options
 
 test("local admin actions are available from the compact accessible dot menu", async ({ page }) => {
   await page.goto("/");
+  await expect(page.locator(".field-caption .app-icon")).toHaveCount(3);
+  await expect(page.locator(".race-form-heading .app-icon")).toBeVisible();
+  await expect(page.locator("#open-history .app-icon")).toBeVisible();
 
   const menu = page.locator("#local-admin-tools");
   const trigger = menu.locator("summary");

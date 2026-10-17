@@ -14,6 +14,9 @@ const diagnoseProviderButton = document.querySelector("#diagnose-provider");
 const localAdminTools = document.querySelector("#local-admin-tools");
 const importFile = document.querySelector("#import-file");
 let current = null;
+function iconMarkup(library, name) {
+  return `<span class="app-icon icon-${library}-${name}" aria-hidden="true"></span>`;
+}
 const LAST_ANALYSIS_KEY = "horseprediction:last-analysis";
 const UI_STATE_KEY = "horseprediction:ui-state";
 const RESULT_REFRESH_INTERVAL_MS = 15000;
@@ -47,7 +50,7 @@ async function loadDeploymentConfig() {
       localAdminTools.classList.remove("hidden");
       return;
     }
-    analyzeButton.textContent = "保存済み分析を表示";
+    analyzeButton.innerHTML = `${iconMarkup("pixel", "clipboard")}<span>保存済み分析を表示</span>`;
   } catch {
     // Keep administration controls hidden unless the server confirms local mode.
   }
@@ -338,7 +341,7 @@ function renderAnalysis() {
           </div>
           ${(positive.length || negative.length) ? `
             <details class="reason-details">
-              <summary>評価理由</summary>
+            <summary>${iconMarkup("hn", "lightbulb")}評価理由</summary>
               <div class="factors">
                 ${positive.length ? `<div><strong>プラス</strong><ul>${positive.map((x) => `<li>${x}</li>`).join("")}</ul></div>` : ""}
                 ${negative.length ? `<div><strong>注意</strong><ul>${negative.map((x) => `<li>${x}</li>`).join("")}</ul></div>` : ""}
@@ -378,8 +381,8 @@ function renderSimulation() {
 function renderUserPredictions() {
   document.querySelector("#user").innerHTML = `
     <article class="row">
-      <button id="save-user">予想を保存</button>
-      <button id="draft-ai-user" class="secondary-button" type="button">AI下書き反映</button>
+      <button id="save-user" class="has-icon">${iconMarkup("pixel", "star")}<span>予想を保存</span></button>
+      <button id="draft-ai-user" class="secondary-button has-icon" type="button">${iconMarkup("pixel", "sparkles")}<span>AI下書き反映</span></button>
       <div class="meta">自分の印だけを保存します。</div>
     </article>
     <article id="user-quality" class="row"></article>
@@ -415,9 +418,9 @@ function renderReview() {
   document.querySelector("#review").innerHTML = `
     ${resultStatusMarkup()}
     <article class="row">
-      <button id="fetch-result" type="button">結果を取得</button>
-      <button id="update-result">結果を更新してレビュー</button>
-      <button id="review-saved-result" class="secondary-button" type="button">保存済み結果でレビュー</button>
+      <button id="fetch-result" class="has-icon" type="button">${iconMarkup("pixel", "download")}<span>結果を取得</span></button>
+      <button id="update-result" class="has-icon">${iconMarkup("pixel", "refresh")}<span>結果を更新してレビュー</span></button>
+      <button id="review-saved-result" class="secondary-button has-icon" type="button">${iconMarkup("hn", "clipboard")}<span>保存済み結果でレビュー</span></button>
     </article>
     <div id="result-grid" class="result-grid">${resultEntriesMarkup()}</div>
     <div id="review-output"></div>
@@ -1040,7 +1043,7 @@ function renderUserPredictionQuality() {
   if (!panel) return;
   panel.innerHTML = `
     <div class="row-head">
-      <strong>入力サマリー</strong>
+      <strong>${iconMarkup("hn", "user")}入力サマリー</strong>
       <span class="meta">印 ${markedCount}/${current.entries.length}</span>
     </div>
     <div class="metrics">
@@ -1111,7 +1114,7 @@ function setAnalysisLoading(isLoading) {
   form.setAttribute("aria-busy", String(isLoading));
   analyzeButton.innerHTML = isLoading
     ? `<span class="spinner button-spinner" aria-hidden="true"></span><span>分析中</span>`
-    : "分析開始";
+    : `${iconMarkup("pixel", "sparkles")}<span>分析開始</span>`;
 }
 function showError(message, isError = true) {
   errorBox.classList.remove("hidden");

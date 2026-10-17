@@ -1,4 +1,4 @@
-const CACHE = "horseprediction-mvp-v55";
+const CACHE = "horseprediction-mvp-v56";
 const ASSETS = [
   "/",
   "/styles.css",
@@ -7,7 +7,27 @@ const ASSETS = [
   "/icons/more-horizontal.svg",
   "/icons/search.svg",
   "/icons/download.svg",
-  "/icons/upload.svg"
+  "/icons/upload.svg",
+  "/icons/pixel-calendar.svg",
+  "/icons/pixel-map.svg",
+  "/icons/pixel-target.svg",
+  "/icons/pixel-flag.svg",
+  "/icons/pixel-sparkles.svg",
+  "/icons/pixel-clipboard.svg",
+  "/icons/pixel-clock.svg",
+  "/icons/pixel-star.svg",
+  "/icons/pixel-refresh.svg",
+  "/icons/pixel-user.svg",
+  "/icons/pixel-trophy.svg",
+  "/icons/hackernoon-analytics.svg",
+  "/icons/hackernoon-calendar-alt.svg",
+  "/icons/hackernoon-chart-line.svg",
+  "/icons/hackernoon-clipboard.svg",
+  "/icons/hackernoon-clock.svg",
+  "/icons/hackernoon-flag.svg",
+  "/icons/hackernoon-lightbulb.svg",
+  "/icons/hackernoon-trophy.svg",
+  "/icons/hackernoon-user.svg"
 ];
 
 self.addEventListener("install", (event) => {
