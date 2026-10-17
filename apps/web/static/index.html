@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#087553">
+  <meta name="theme-color" content="#f7faf8">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/styles.css">
   <title>競馬予想支援</title>
@@ -14,22 +14,25 @@
       <header class="app-header">
         <div>
           <h1>競馬予想支援</h1>
-          <p>JRA レース分析</p>
+          <p class="app-subtitle">JRA レース分析</p>
           <p class="service-disclaimer">本アプリはJRA公式サービスではありません。</p>
         </div>
         <div class="header-actions">
           <button id="open-history" class="secondary-button compact-button" type="button">履歴</button>
           <details id="local-admin-tools" class="utility-menu hidden">
-            <summary title="その他の操作" aria-label="その他の操作">•••</summary>
+            <summary title="その他の操作" aria-label="その他の操作">
+              <span class="pixel-menu-icon" aria-hidden="true"></span>
+            </summary>
             <div class="utility-menu-panel">
-              <button id="diagnose-provider" class="secondary-button" type="button">取得診断</button>
-              <button id="export-data" class="secondary-button" type="button">データ出力</button>
-              <button id="import-data" class="secondary-button" type="button">データ読込</button>
+              <button id="diagnose-provider" class="secondary-button" type="button"><span class="admin-action-icon admin-action-icon-search" aria-hidden="true"></span><span>取得診断</span></button>
+              <button id="export-data" class="secondary-button" type="button"><span class="admin-action-icon admin-action-icon-download" aria-hidden="true"></span><span>データ出力</span></button>
+              <button id="import-data" class="secondary-button" type="button"><span class="admin-action-icon admin-action-icon-upload" aria-hidden="true"></span><span>データ読込</span></button>
             </div>
           </details>
         </div>
       </header>
       <form id="race-form" class="race-form">
+        <div class="race-form-heading"><h2>レース選択</h2></div>
         <label>開催日<input id="race-date" type="date" required></label>
         <label>競馬場<select id="racecourse" required><option value="">開催情報を読み込み中</option></select></label>
         <label>レース番号<select id="race-number" required><option value="">--</option></select></label>

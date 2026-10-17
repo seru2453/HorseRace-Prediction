@@ -214,14 +214,40 @@ test("local admin actions are available from the compact accessible dot menu", a
 
   const menu = page.locator("#local-admin-tools");
   const trigger = menu.locator("summary");
-  await expect(trigger).toHaveText("•••");
+  await expect(trigger.locator(".pixel-menu-icon")).toBeVisible();
+  await expect(trigger).toHaveText("");
   await expect(trigger).toHaveAttribute("aria-label", "その他の操作");
   await expect(trigger).toHaveAttribute("title", "その他の操作");
   await expect(trigger).toBeVisible();
   await expect.poll(async () => (await trigger.boundingBox())?.width).toBe(44);
+  await expect.poll(async () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await trigger.click();
   await expect(menu.getByRole("button", {name: "取得診断"})).toBeVisible();
   await expect(menu.getByRole("button", {name: "データ出力"})).toBeVisible();
   await expect(menu.getByRole("button", {name: "データ読込"})).toBeVisible();
+  await expect(menu.locator(".admin-action-icon")).toHaveCount(3);
+});
+
+test("light and dark themes keep the race form legible", async ({ page }) => {
+  await page.goto("/");
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f7faf8");
+  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#111513");
+  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(26, 33, 30)");
+});
+
+test("mobile layout and admin menu fit a 320px viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/");
+  await expect.poll(async () => page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
+
+  const menu = page.locator("#local-admin-tools");
+  await menu.locator("summary").click();
+  const panel = await menu.locator(".utility-menu-panel").boundingBox();
+  expect(panel).not.toBeNull();
+  expect(panel.x).toBeGreaterThanOrEqual(0);
+  expect(panel.x + panel.width).toBeLessThanOrEqual(320);
 });

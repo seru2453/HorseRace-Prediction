@@ -1,5 +1,14 @@
-const CACHE = "horseprediction-mvp-v54";
-const ASSETS = ["/", "/styles.css", "/app.js", "/manifest.webmanifest"];
+const CACHE = "horseprediction-mvp-v55";
+const ASSETS = [
+  "/",
+  "/styles.css",
+  "/app.js",
+  "/manifest.webmanifest",
+  "/icons/more-horizontal.svg",
+  "/icons/search.svg",
+  "/icons/download.svg",
+  "/icons/upload.svg"
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
