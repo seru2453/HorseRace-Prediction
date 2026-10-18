@@ -22,7 +22,7 @@ async function stubSchedule(page) {
   });
 }
 
-test("analysis is visual and reload restores the race and tab", async ({ page }, testInfo) => {
+test("analysis is visual and reopening defaults race date to today", async ({ page }, testInfo) => {
   await stubSchedule(page);
   await page.route("**/api/analyze", async (route) => {
     const payload = JSON.parse(route.request().postData() || "{}");
@@ -78,13 +78,15 @@ test("analysis is visual and reload restores the race and tab", async ({ page },
   await analyzeButton.click();
   await expect(page.getByRole("button", { name: "分析中" })).toBeDisabled();
   await expect(page.locator("#progress .spinner")).toBeVisible();
+  await expect(page.locator("#progress")).toContainText("レース分析を実行中です");
+  await expect(page.locator("#progress")).not.toContainText(/レース確認|出馬表取得|出走馬解析|過去データ照合|予測準備/);
 
   const predictions = page.locator("#analysis .prediction");
   await expect(predictions.first()).toBeVisible();
-  await expect(page.locator("#tabs .app-icon")).toHaveCount(6);
-  await expect(page.locator("#tabs .app-icon").first()).toBeVisible();
+  await expect(page.locator("#tabs button")).toHaveCount(6);
+  await expect(page.locator("#tabs")).toHaveCSS("flex-direction", "row");
   await expect(page.getByRole("button", { name: "分析開始" })).toBeEnabled();
-  expect(await predictions.count()).toBe(await page.locator("#entries .row").count());
+  expect(await predictions.count()).toBe(await page.locator("#entries .analysis-card").count());
   await expect(page.locator(".tabs button.active")).toHaveText("AI予想");
   await expect(predictions.first().locator(".prediction-rank small")).toHaveText("本命");
   await expect(predictions.first().locator(".probability-bar span")).toBeVisible();
@@ -121,10 +123,14 @@ test("analysis is visual and reload restores the race and tab", async ({ page },
   });
 
   await page.reload();
-  await expect(page.locator(".tabs button.active")).toHaveText("自分の予想");
-  await expect(page.locator("#race-date")).toHaveValue("2026-08-16");
+  const today = await page.evaluate(() => {
+    const date = new Date();
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  });
+  await expect(page.locator("#tabs")).toBeHidden();
+  await expect(page.locator("#race-date")).toHaveValue(today);
   await expect(page.locator("#racecourse")).toHaveValue("札幌");
-  await expect(page.locator("#race-number")).toHaveValue("11");
+  await expect(page.locator("#race-number")).toHaveValue(/.+/);
 
   const reloadScreenshot = await page.screenshot({
     path: `test-results/ui-reload-${testInfo.project.name}.png`,
@@ -135,7 +141,47 @@ test("analysis is visual and reload restores the race and tab", async ({ page },
   expect(bodyWidth).toBeLessThanOrEqual(testInfo.project.use.viewport.width);
 });
 
-test("a previous-day selection is restored after reload", async ({ page }) => {
+test("started race opens the results view without creating a prediction", async ({ page }) => {
+  await stubSchedule(page);
+  const resultOnlyPayload = {
+    race: {
+      race_id: "20260816-sapporo-11",
+      race_date: { value: "2026-08-16" },
+      racecourse: { value: "札幌" },
+      race_number: { value: 11 },
+      race_name: { value: "テスト記念" },
+      surface: { value: "芝" },
+      distance: { value: 2000 }
+    },
+    entries: [],
+    predictions: [],
+    simulation: null,
+    result: {
+      result_timestamp: "2026-08-16T15:00:00+09:00",
+      entries: [{ horse_number: 1, horse_name: "テストホース", finish_position: 1, result_status: "finished" }]
+    },
+    result_source: "provider",
+    result_only: true
+  };
+  await page.route("**/api/analyze", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(resultOnlyPayload)
+  }));
+
+  await page.goto("/");
+  await page.locator("#race-date").fill("2026-08-16");
+  await page.locator("#racecourse").selectOption("札幌");
+  await page.locator("#race-number").selectOption("11");
+  await page.getByRole("button", { name: "分析開始" }).click();
+
+  await expect(page.locator(".tabs button.active")).toHaveText("結果");
+  await expect(page.locator("#summary")).toContainText("予測を省略");
+  await expect(page.locator("[data-result-status]")).toContainText("結果取得済み");
+  await expect(page.locator('.result-entry[data-horse-number="1"] [data-result-position]')).toHaveText("1着");
+});
+
+test("opening with a previous-day selection defaults to today and today's racecourses", async ({ page }) => {
   await stubSchedule(page);
   await page.addInitScript(() => {
     localStorage.setItem("horseprediction:ui-state", JSON.stringify({
@@ -153,13 +199,18 @@ test("a previous-day selection is restored after reload", async ({ page }) => {
   });
 
   await page.goto("/");
-  await expect(page.locator("#race-date")).toHaveValue("2026-08-29");
-  await expect(page.locator("#racecourse")).toHaveValue("札幌");
-  await expect(page.locator("#race-number")).toHaveValue("11");
+  const today = await page.evaluate(() => {
+    const date = new Date();
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  });
+  await expect(page.locator("#race-date")).toHaveValue(today);
+  await expect(page.locator("#racecourse option")).toHaveText(today === "2026-09-12" ? ["阪神"] : ["札幌"]);
+  await expect(page.locator("#racecourse")).toHaveValue(today === "2026-09-12" ? "阪神" : "札幌");
+  await expect(page.locator("#race-number")).toHaveValue(/.+/);
   await expect(page.locator("#tabs")).toBeHidden();
 });
 
-test("a changed race date is not overwritten by the previous analysis", async ({ page }) => {
+test("a saved selection from another date does not override today's default", async ({ page }) => {
   await stubSchedule(page);
   await page.addInitScript(() => {
     localStorage.setItem("horseprediction:ui-state", JSON.stringify({
@@ -177,13 +228,18 @@ test("a changed race date is not overwritten by the previous analysis", async ({
   });
 
   await page.goto("/");
-  await expect(page.locator("#race-date")).toHaveValue("2026-09-12");
-  await expect(page.locator("#racecourse")).toHaveValue("阪神");
-  await expect(page.locator("#race-number")).toHaveValue("11");
+  const today = await page.evaluate(() => {
+    const date = new Date();
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  });
+  await expect(page.locator("#race-date")).toHaveValue(today);
+  await expect(page.locator("#racecourse option")).toHaveText(today === "2026-09-12" ? ["阪神"] : ["札幌"]);
+  await expect(page.locator("#racecourse")).toHaveValue(today === "2026-09-12" ? "阪神" : "札幌");
+  await expect(page.locator("#race-number")).toHaveValue(/.+/);
   await expect(page.locator("#tabs")).toBeHidden();
 });
 
-test("race selection follows the daily schedule and falls back to manual options", async ({ page }) => {
+test("race selection follows the daily schedule and stays empty if the schedule is unavailable", async ({ page }) => {
   await page.route("**/api/schedule?*", async (route) => {
     const date = new URL(route.request().url()).searchParams.get("date");
     if (date === "2026-09-12") {
@@ -206,48 +262,45 @@ test("race selection follows the daily schedule and falls back to manual options
   await expect(page.locator("#race-number option")).toHaveText(["2R 10:35", "11R 15:45"]);
 
   await page.locator("#race-date").fill("2026-09-12");
-  await expect(page.locator("#error")).toContainText("手動選択に切り替えています");
-  await expect(page.locator("#racecourse option")).toHaveCount(10);
-  await expect(page.locator("#race-number option")).toHaveCount(12);
+  await expect(page.locator("#error")).toContainText("schedule unavailable");
+  await expect(page.locator("#racecourse option")).toHaveText("開催情報なし");
+  await expect(page.locator("#racecourse")).toHaveValue("");
+  await expect(page.locator("#race-number option")).toHaveText("--");
 });
 
-test("local admin actions are available from the compact accessible dot menu", async ({ page }) => {
+test("local admin actions are available from the compact accessible menu", async ({ page }) => {
   await page.goto("/");
-  await expect(page.locator(".field-caption .app-icon")).toHaveCount(3);
-  await expect(page.locator(".race-form-heading .app-icon")).toBeVisible();
-  await expect(page.locator("#open-history .app-icon")).toBeVisible();
-  await expect(page.locator(".app-mascot")).toBeVisible();
-  await expect.poll(() => page.locator(".app-mascot").evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
-  await expect(page.locator("#race-form")).toHaveClass(/nes-container/);
-  await expect(page.locator("#open-history")).toHaveClass(/nes-btn/);
+  await expect(page.locator("#race-form")).toHaveClass(/card/);
+  await expect(page.locator("#open-history")).toHaveClass(/btn/);
+  await expect(page.locator(".app-mascot")).toHaveCount(0);
 
   const menu = page.locator("#local-admin-tools");
   const trigger = menu.locator("summary");
-  await expect(trigger.locator(".pixel-menu-icon")).toBeVisible();
-  await expect(trigger).toHaveText("");
+  await expect(trigger).toHaveText("⋮");
   await expect(trigger).toHaveAttribute("aria-label", "その他の操作");
   await expect(trigger).toHaveAttribute("title", "その他の操作");
   await expect(trigger).toBeVisible();
-  await expect.poll(async () => (await trigger.boundingBox())?.width).toBe(44);
+  await expect.poll(async () => (await trigger.boundingBox())?.width).toBe(40);
   await expect.poll(async () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await trigger.click();
   await expect(menu.getByRole("button", {name: "取得診断"})).toBeVisible();
   await expect(menu.getByRole("button", {name: "データ出力"})).toBeVisible();
   await expect(menu.getByRole("button", {name: "データ読込"})).toBeVisible();
-  await expect(menu.locator(".admin-action-icon")).toHaveCount(3);
+  await expect(menu.locator("button")).toHaveCount(3);
 });
 
-test("light and dark themes keep the race form legible", async ({ page }) => {
+test("Material Kit dashboard uses a readable system font and light palette", async ({ page }) => {
   await page.goto("/");
-  await page.evaluate(() => document.fonts.load('16px "DotGothic16"'));
-  await expect.poll(() => page.evaluate(() => document.fonts.check('16px "DotGothic16"'))).toBe(true);
-  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f2f5e9");
-  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(255, 254, 247)");
+  await expect(page.locator('link[href="/vendor/material-kit.min.css"]')).toHaveCount(1);
+  await expect(page.locator(":root")).toHaveCSS("color-scheme", "light");
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f7f8fa");
+  await expect.poll(async () => page.locator("body").evaluate((node) => getComputedStyle(node).fontFamily.includes("system-ui"))).toBe(true);
+  await expect(page.locator("#race-date")).toHaveClass(/form-control/);
+  await expect(page.locator(".app-mascot")).toHaveCount(0);
 
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#121a16");
-  await expect(page.locator("#race-form")).toHaveCSS("background-color", "rgb(32, 43, 36)");
+  await expect.poll(async () => page.locator(":root").evaluate((node) => getComputedStyle(node).getPropertyValue("--bg").trim())).toBe("#f7f8fa");
 });
 
 test("mobile layout and admin menu fit a 320px viewport", async ({ page }) => {

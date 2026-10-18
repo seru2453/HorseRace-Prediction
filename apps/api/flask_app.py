@@ -56,6 +56,7 @@ def create_app() -> Flask:
             "latest_user_predictions": detail.get("latest_user_predictions") or {},
             "result": detail.get("result"),
             "result_source": detail.get("result_source"),
+            "result_only": bool(detail.get("result")) and not bool(detail.get("latest_predictions")),
             "message": "発走前に保存した分析を表示しています。",
             "restored_from_saved": True,
         }
@@ -123,6 +124,30 @@ def create_app() -> Flask:
         except (ProviderUnavailableError, ValueError) as exc:
             if saved_detail:
                 return jsonify(saved_analysis_payload(saved_detail))
+            if mode == "jra" and str(exc) == "発走後のレースは予測を作成・保存できません。":
+                provider = service.provider
+                try:
+                    race = provider.get_race(payload["race_date"], payload["racecourse"], int(payload["race_number"]))
+                    entries = provider.get_race_entries(race.race_id)
+                    result_data = provider.get_race_results(race.race_id)
+                    if result_data is not None:
+                        with session_factory() as session:
+                            RaceRepository(session).save_result(result_data)
+                    return jsonify({
+                        "race": race.model_dump(mode="json"),
+                        "entries": [entry.model_dump(mode="json") for entry in entries],
+                        "predictions": [],
+                        "simulation": None,
+                        "parse_quality": None,
+                        "provider_name": type(provider).__name__,
+                        "latest_user_predictions": {},
+                        "result": result_data.model_dump(mode="json") if result_data is not None else None,
+                        "result_source": "provider" if result_data is not None else None,
+                        "result_only": True,
+                        "message": "発走済みのため予測は作成せず、公式結果を表示しています。" if result_data is not None else "発走済みのため予測は作成していません。公式結果はまだ公開されていません。",
+                    })
+                except (ProviderUnavailableError, ValueError) as result_exc:
+                    return jsonify({"ok": False, "message": str(result_exc), "mode": mode}), 400
             return jsonify({"ok": False, "message": str(exc), "mode": mode}), 400
         response_payload = result.model_dump(mode="json")
         with session_factory() as session:
