@@ -21,6 +21,39 @@ Open `http://localhost:8000`.
 
 `DEPLOYMENT_MODE=local` (default) keeps the local export/import and live provider features available. Set `DEPLOYMENT_MODE=public` to hide local administration controls and restrict public requests to saved analysis/results; public requests do not trigger upstream JRA fetches. Public mode is a deployment boundary, not an authentication system.
 
+## 毎週土曜の自動起動・停止（macOS）
+
+macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開き、16:30にこのリポジトリのアプリサーバーを停止します。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
+
+起動・停止用のLaunchAgentを2つ登録します。アプリが既に動いている場合は二重起動せず、ポート8000を使うプロセスの作業ディレクトリとコマンドを照合してからPIDを記録します。停止時も記録したPIDがこのリポジトリのFlaskプロセスであることを確認してからSIGTERMを送り、最大30秒待ちます。停止しない場合も強制終了はしません。他のPythonプロセスやブラウザは終了しません。
+
+```bash
+scripts/install_macos_autostart.sh
+```
+
+登録内容は `~/Library/LaunchAgents/com.horserace.saturday.plist` と `~/Library/LaunchAgents/com.horserace.saturday-stop.plist` に生成されます。スクリプトはリポジトリ位置からアプリを起動するため、ユーザー固有のパスをリポジトリへ書き込む必要はありません。手動で動作を確認する場合は次を実行します。
+
+```bash
+scripts/open_keiba.sh
+```
+
+停止スクリプトも必要に応じて手動実行できます。起動スクリプトが記録したアプリPIDだけを対象にします。
+
+```bash
+scripts/close_keiba.sh
+```
+
+アプリが応答済みならサーバーを増やさずブラウザだけを開き、対象プロセスを停止用PIDファイルへ記録します。起動直後は `/api/config` の応答を最大120秒待ちます。スケジュールの実行・停止結果は `/tmp/horse-race-saturday.log`、アプリのログは `/tmp/horse-race-app.log`、PIDファイルは `/tmp/horse-race-app-$(id -u).pid` です。アプリ側の定期処理は `make dev` に含まれるため、別途 `make worker` を起動しないでください。
+
+自動起動を解除する場合:
+
+```bash
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.horserace.saturday.plist"
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.horserace.saturday-stop.plist"
+rm "$HOME/Library/LaunchAgents/com.horserace.saturday.plist"
+rm "$HOME/Library/LaunchAgents/com.horserace.saturday-stop.plist"
+```
+
 ## Docker
 
 ```bash
