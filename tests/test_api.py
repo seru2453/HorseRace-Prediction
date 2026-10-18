@@ -148,6 +148,50 @@ def test_public_mode_returns_saved_analysis_without_fetching(tmp_path, monkeypat
     assert all("raw_features" not in row for row in detail["latest_snapshots"])
 
 
+@pytest.mark.parametrize("with_result", [True, False])
+def test_started_race_skips_prediction_and_returns_result_view(tmp_path, monkeypatch, with_result):
+    from services.data_provider.jra_official import JraOfficialProvider
+    from services.common.models import (
+        HorseData, RaceData, RaceEntryData, RaceResultData, RaceResultEntryData, field,
+    )
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/started-race.sqlite3")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "local")
+    race = RaceData(
+        race_id="20260816-sapporo-11", race_date=field("2026-08-16"), racecourse=field("札幌"),
+        race_number=field(11), race_name=field("テスト記念"), surface=field("芝"), distance=field(2000),
+    )
+    entry = RaceEntryData(
+        race_id=race.race_id, horse=HorseData(horse_id="h1", horse_name=field("テストホース")),
+        frame_number=field(1), horse_number=field(1),
+    )
+    result = RaceResultData(
+        race_id=race.race_id, result_timestamp="2026-08-16T15:00:00+09:00",
+        entries=[RaceResultEntryData(horse_number=1, horse_name="テストホース", finish_position=1)],
+    )
+
+    def reject_prediction(*_args, **_kwargs):
+        raise ValueError("発走後のレースは予測を作成・保存できません。")
+
+    monkeypatch.setattr(JraOfficialProvider, "get_race", lambda *_args: race)
+    monkeypatch.setattr(JraOfficialProvider, "get_race_entries", lambda *_args: [entry])
+    monkeypatch.setattr(JraOfficialProvider, "get_race_results", lambda *_args: result if with_result else None)
+    monkeypatch.setattr("services.app.orchestrator.RaceAnalysisService.analyze", reject_prediction)
+    response = create_app().test_client().post(
+        "/api/analyze",
+        json={"race_date": "2026-08-16", "racecourse": "札幌", "race_number": 11, "mode": "jra"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result_only"] is True
+    assert payload["predictions"] == []
+    if with_result:
+        assert payload["result"]["entries"][0]["finish_position"] == 1
+    else:
+        assert payload["result"] is None
+
+
 def test_schedule_api_groups_courses_and_hides_provider_urls(tmp_path, monkeypatch):
     from services.data_provider.jra_official import JraOfficialProvider
 

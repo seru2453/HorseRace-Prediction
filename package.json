@@ -6,8 +6,5 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1"
-  },
-  "dependencies": {
-    "nes.css": "2.3.0"
   }
 }
