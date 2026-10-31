@@ -18,7 +18,7 @@ from services.learning.daily_pipeline import DailyRacePipeline
 def main() -> int:
     parser = argparse.ArgumentParser(description="Discover, predict and review today's JRA races.")
     parser.add_argument("--watch", action="store_true")
-    parser.add_argument("--interval", type=int, default=3600)
+    parser.add_argument("--interval", type=int, default=1800)
     args = parser.parse_args()
     service = DailyRacePipeline(JraOfficialProvider(), os.getenv("DATABASE_URL"))
     while True:

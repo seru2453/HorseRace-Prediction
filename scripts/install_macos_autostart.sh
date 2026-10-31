@@ -22,6 +22,6 @@ for plist_path in "$PLIST_PATH" "$STOP_PLIST_PATH"; do
   launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$plist_path"
 done
-echo "Installed Saturday startup at 09:40: $PLIST_PATH"
-echo "Installed Saturday shutdown at 16:30: $STOP_PLIST_PATH"
+echo "Installed Saturday/Sunday startup at 09:40: $PLIST_PATH"
+echo "Installed Saturday/Sunday final pipeline and shutdown at 16:30: $STOP_PLIST_PATH"
 echo "Run scripts/open_keiba.sh to try it now."

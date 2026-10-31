@@ -21,6 +21,10 @@ def test_daily_pipeline_predicts_once_before_start(tmp_path):
 
     assert first["predictions"][0]["status"] == "predicted"
     assert second["predictions"][0]["status"] == "already_predicted"
+    assert first["predicted"] == 1
+    assert first["already_predicted"] == 0
+    assert first["schedule_count"] == 1
+    assert second["already_predicted"] == 1
     with make_session_factory(database_url)() as session:
         assert RaceRepository(session).has_prediction_snapshot("20260816-sapporo-11")
 
@@ -54,6 +58,8 @@ def test_daily_pipeline_reviews_backlog_when_schedule_discovery_fails(tmp_path):
     )
 
     assert result["discovery_error"] == "schedule unavailable"
+    assert result["errors"] == 1
+    assert result["reviewed"] == 1
     assert result["reviews"][0]["status"] == "reviewed"
 
 

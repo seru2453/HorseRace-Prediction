@@ -79,9 +79,23 @@ class DailyRacePipeline:
             predicted += 1
 
         reviews = AutomaticReviewService(self.provider, self.database_url).run_once(limit=200)
+        prediction_statuses = [item["status"] for item in outcomes]
+        review_statuses = [item["status"] for item in reviews]
+        summary = {
+            "schedule_count": len(schedule),
+            "predicted": prediction_statuses.count("predicted"),
+            "already_predicted": prediction_statuses.count("already_predicted"),
+            "prediction_pending": sum(status in {"prediction_pending", "deferred"} for status in prediction_statuses),
+            "reviewed": review_statuses.count("reviewed"),
+            "result_pending": review_statuses.count("pending"),
+            "errors": int(discovery_error is not None)
+            + prediction_statuses.count("missed_prediction_window")
+            + prediction_statuses.count("error")
+            + review_statuses.count("error"),
+        }
         return {
             "race_date": race_date,
-            "schedule_count": len(schedule),
+            **summary,
             "discovery_error": discovery_error,
             "predictions": outcomes,
             "reviews": reviews,
@@ -89,7 +103,7 @@ class DailyRacePipeline:
 
 
 def start_daily_pipeline_worker(provider: RacingDataProvider, database_url: str | None = None) -> threading.Thread:
-    interval = max(1800.0, float(os.getenv("AUTO_PIPELINE_INTERVAL_SECONDS", "3600")))
+    interval = max(1800.0, float(os.getenv("AUTO_PIPELINE_INTERVAL_SECONDS", "1800")))
     initial_delay = max(5.0, float(os.getenv("AUTO_PIPELINE_INITIAL_DELAY_SECONDS", "30")))
     lead_minutes = max(30, int(os.getenv("AUTO_PREDICTION_LEAD_MINUTES", "120")))
     service = DailyRacePipeline(provider, database_url)
@@ -101,10 +115,15 @@ def start_daily_pipeline_worker(provider: RacingDataProvider, database_url: str 
         while True:
             try:
                 result = service.run_once(prediction_lead_minutes=lead_minutes)
-                predicted = sum(item["status"] == "predicted" for item in result["predictions"])
-                reviewed = sum(item["status"] == "reviewed" for item in result["reviews"])
                 print(
-                    f"[daily-pipeline] races={result['schedule_count']} predicted={predicted} reviewed={reviewed}",
+                    "[daily-pipeline] "
+                    + " ".join(
+                        f"{key}={result[key]}"
+                        for key in (
+                            "schedule_count", "predicted", "already_predicted", "prediction_pending",
+                            "reviewed", "result_pending", "errors",
+                        )
+                    ),
                     flush=True,
                 )
             except Exception as exc:

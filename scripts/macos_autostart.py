@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the local Saturday LaunchAgent plist."""
+"""Generate the local weekend LaunchAgent plist."""
 
 import plistlib
 import sys
@@ -11,15 +11,22 @@ def launch_agent(repo_dir: str, label: str, *, action: str = "start") -> dict:
         script = "open_keiba.sh"
         hour, minute = 9, 40
     elif action == "stop":
-        script = "close_keiba.sh"
+        script = "finalize_keiba.py"
         hour, minute = 16, 30
     else:
         raise ValueError(f"unknown LaunchAgent action: {action}")
     return {
         "Label": label,
-        "ProgramArguments": [str(Path(repo_dir) / "scripts" / script)],
-        # launchd uses 0/7 for Sunday, so Saturday is 6.
-        "StartCalendarInterval": {"Weekday": 6, "Hour": hour, "Minute": minute},
+        "ProgramArguments": (
+            [sys.executable, str(Path(repo_dir) / "scripts" / script)]
+            if action == "stop"
+            else [str(Path(repo_dir) / "scripts" / script)]
+        ),
+        # launchd uses 0/7 for Sunday and 6 for Saturday.
+        "StartCalendarInterval": [
+            {"Weekday": weekday, "Hour": hour, "Minute": minute}
+            for weekday in (6, 0)
+        ],
         # The wrapper exits after opening the browser; keep make dev alive.
         "AbandonProcessGroup": action == "start",
         "RunAtLoad": False,
