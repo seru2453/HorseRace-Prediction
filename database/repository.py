@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 from statistics import mean
 
@@ -37,12 +38,13 @@ from services.common.models import (
     RaceResultData,
     UserPredictionInput,
 )
-from services.common.race_eligibility import is_supported_flat_race, prediction_lead_minutes
+from services.common.race_eligibility import is_supported_flat_race, prediction_lead_minutes, race_start_datetime
 from services.prediction.config import DEFAULT_STABILITY_CONFIG
 
 
 class RaceRepository:
     EXPORT_FORMAT_VERSION = "horseprediction-export-v1"
+    QUERY_CHUNK_SIZE = 300
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -579,255 +581,187 @@ class RaceRepository:
             ],
         }
 
-    def export_data(self) -> dict:
-        races = self.session.scalars(select(Race).order_by(Race.created_at)).all()
-        race_entries = self.session.scalars(select(RaceEntry).order_by(RaceEntry.race_id, RaceEntry.horse_number)).all()
-        horses = self.session.scalars(select(Horse).order_by(Horse.horse_id)).all()
-        analysis_runs = self.session.scalars(select(AnalysisRun).order_by(AnalysisRun.created_at)).all()
-        prediction_snapshots = self.session.scalars(select(PredictionSnapshot).order_by(PredictionSnapshot.id)).all()
-        simulations = self.session.scalars(select(Simulation).order_by(Simulation.created_at)).all()
-        user_predictions = self.session.scalars(select(UserPrediction).order_by(UserPrediction.prediction_timestamp)).all()
-        race_results = self.session.scalars(select(RaceResult).order_by(RaceResult.stored_at)).all()
-        prediction_reviews = self.session.scalars(select(PredictionReview).order_by(PredictionReview.created_at)).all()
-        past_performances = self.session.scalars(select(PastPerformance).order_by(PastPerformance.stored_at)).all()
-        model_evaluations = self.session.scalars(select(ModelEvaluation).order_by(ModelEvaluation.evaluated_at)).all()
-        training_runs = self.session.scalars(select(TrainingRun).order_by(TrainingRun.trained_at)).all()
-        challenger_predictions = self.session.scalars(select(ChallengerPrediction).order_by(ChallengerPrediction.id)).all()
-        qualitative_evidence = self.session.scalars(select(QualitativeEvidence).order_by(QualitativeEvidence.id)).all()
-        source_reliability = self.session.scalars(select(SourceReliability).order_by(SourceReliability.id)).all()
-        data = {
-            "races": [
-                {
-                    "race_id": row.race_id,
-                    "race_date": row.race_date,
-                    "racecourse": row.racecourse,
-                    "race_number": row.race_number,
-                    "payload": row.payload,
-                    "created_at": self._iso(row.created_at),
-                }
-                for row in races
-            ],
-            "horses": [{"horse_id": row.horse_id, "horse_name": row.horse_name, "payload": row.payload} for row in horses],
-            "race_entries": [
-                {
-                    "race_id": row.race_id,
-                    "horse_id": row.horse_id,
-                    "horse_number": row.horse_number,
-                    "frame_number": row.frame_number,
-                    "scratched": row.scratched,
-                    "payload": row.payload,
-                }
-                for row in race_entries
-            ],
-            "analysis_runs": [
-                {
-                    "id": row.id,
-                    "race_id": row.race_id,
-                    "provider_name": row.provider_name,
-                    "parse_status": row.parse_status,
-                    "recognized_entries": row.recognized_entries,
-                    "expected_entries": row.expected_entries,
-                    "issue_count": row.issue_count,
-                    "payload": row.payload,
-                    "created_at": self._iso(row.created_at),
-                }
-                for row in analysis_runs
-            ],
-            "prediction_snapshots": [self._snapshot_payload(row) for row in prediction_snapshots],
-            "challenger_predictions": [
-                {
-                    "prediction_snapshot_id": row.prediction_snapshot_id,
-                    "model_version": row.model_version,
-                    "feature_version": row.feature_version,
-                    "target": row.target,
-                    "predicted_value": row.predicted_value,
-                    "metadata_json": row.metadata_json,
-                    "created_at": self._iso(row.created_at),
-                }
-                for row in challenger_predictions
-            ],
-            "simulations": [
-                {
-                    "id": row.id,
-                    "race_id": row.race_id,
-                    "iterations": row.iterations,
-                    "seed": row.seed,
-                    "payload": row.payload,
-                    "created_at": self._iso(row.created_at),
-                }
-                for row in simulations
-            ],
-            "user_predictions": [
-                {
-                    "id": row.id,
-                    "race_id": row.race_id,
-                    "horse_number": row.horse_number,
-                    "payload": row.payload,
-                    "prediction_timestamp": self._iso(row.prediction_timestamp),
-                }
-                for row in user_predictions
-            ],
-            "race_results": [
-                {
-                    "race_id": row.race_id,
-                    "payload": row.payload,
-                    "result_timestamp": row.result_timestamp,
-                    "stored_at": self._iso(row.stored_at),
-                }
-                for row in race_results
-            ],
-            "prediction_reviews": [
-                {
-                    "id": row.id,
-                    "race_id": row.race_id,
-                    "payload": row.payload,
-                    "created_at": self._iso(row.created_at),
-                }
-                for row in prediction_reviews
-            ],
-            "past_performances": [
-                {
-                    "id": row.id,
-                    "horse_id": row.horse_id,
-                    "observed_in_race_id": row.observed_in_race_id,
-                    "race_date": row.race_date,
-                    "racecourse": row.racecourse,
-                    "race_name": row.race_name,
-                    "finish_position": row.finish_position,
-                    "payload": row.payload,
-                    "stored_at": self._iso(row.stored_at),
-                }
-                for row in past_performances
-            ],
-            "model_evaluations": [
-                {
-                    "model_version": row.model_version,
-                    "feature_version": row.feature_version,
-                    "evaluation_period": row.evaluation_period,
-                    "brier_score": row.brier_score,
-                    "log_loss": row.log_loss,
-                    "calibration_error": row.calibration_error,
-                    "top3_hit_rate": row.top3_hit_rate,
-                    "training_start": row.training_start,
-                    "training_end": row.training_end,
-                    "evaluation_start": row.evaluation_start,
-                    "evaluation_end": row.evaluation_end,
-                    "top3_recall": row.top3_recall,
-                    "winner_rank_mean": row.winner_rank_mean,
-                    "prediction_top3_mean_finish": row.prediction_top3_mean_finish,
-                    "relative_finish_error": row.relative_finish_error,
-                    "sample_count": row.sample_count,
-                    "race_count": row.race_count,
-                    "horse_count": row.horse_count,
-                    "evaluation_variant": row.evaluation_variant,
-                    "metrics_json": row.metrics_json,
-                    "evaluated_at": self._iso(row.evaluated_at),
-                }
-                for row in model_evaluations
-            ],
-            "training_runs": [
-                {
-                    "model_version": row.model_version,
-                    "trained_at": self._iso(row.trained_at),
-                    "training_start": row.training_start,
-                    "training_end": row.training_end,
-                    "feature_version": row.feature_version,
-                    "label": row.label,
-                    "status": row.status,
-                    "row_count": row.row_count,
-                    "race_count": row.race_count,
-                    "metrics_json": row.metrics_json,
-                }
-                for row in training_runs
-            ],
-            "qualitative_evidence": [
-                {
-                    "source_type": row.source_type,
-                    "source_name": row.source_name,
-                    "source_url": row.source_url,
-                    "published_at": self._iso(row.published_at),
-                    "author": row.author,
-                    "race_id": row.race_id,
-                    "horse_id": row.horse_id,
-                    "raw_text": row.raw_text,
-                    "normalized_text": row.normalized_text,
-                    "confidence": row.confidence,
-                    "content_hash": row.content_hash,
-                    "collected_at": self._iso(row.collected_at),
-                }
-                for row in qualitative_evidence
-            ],
-            "source_reliability": [
-                {
-                    "source_type": row.source_type,
-                    "source_name": row.source_name,
-                    "reliability": row.reliability,
-                    "sample_count": row.sample_count,
-                    "metrics_json": row.metrics_json,
-                    "updated_at": self._iso(row.updated_at),
-                }
-                for row in source_reliability
-            ],
+    EXPORT_CHUNK_SIZE = 500
+
+    def _export_specs(self):
+        return [
+            ("races", Race, (Race.created_at,), lambda row: {
+                "race_id": row.race_id, "race_date": row.race_date, "racecourse": row.racecourse,
+                "race_number": row.race_number, "payload": row.payload, "created_at": self._iso(row.created_at),
+            }),
+            ("horses", Horse, (Horse.horse_id,), lambda row: {
+                "horse_id": row.horse_id, "horse_name": row.horse_name, "payload": row.payload,
+            }),
+            ("race_entries", RaceEntry, (RaceEntry.race_id, RaceEntry.horse_number), lambda row: {
+                "race_id": row.race_id, "horse_id": row.horse_id, "horse_number": row.horse_number,
+                "frame_number": row.frame_number, "scratched": row.scratched, "payload": row.payload,
+            }),
+            ("analysis_runs", AnalysisRun, (AnalysisRun.created_at,), lambda row: {
+                "id": row.id, "race_id": row.race_id, "provider_name": row.provider_name,
+                "parse_status": row.parse_status, "recognized_entries": row.recognized_entries,
+                "expected_entries": row.expected_entries, "issue_count": row.issue_count,
+                "payload": row.payload, "created_at": self._iso(row.created_at),
+            }),
+            ("prediction_snapshots", PredictionSnapshot, (PredictionSnapshot.id,), self._snapshot_payload),
+            ("challenger_predictions", ChallengerPrediction, (ChallengerPrediction.id,), lambda row: {
+                "prediction_snapshot_id": row.prediction_snapshot_id, "model_version": row.model_version,
+                "feature_version": row.feature_version, "target": row.target, "predicted_value": row.predicted_value,
+                "metadata_json": row.metadata_json, "created_at": self._iso(row.created_at),
+            }),
+            ("simulations", Simulation, (Simulation.created_at,), lambda row: {
+                "id": row.id, "race_id": row.race_id, "iterations": row.iterations, "seed": row.seed,
+                "payload": row.payload, "created_at": self._iso(row.created_at),
+            }),
+            ("user_predictions", UserPrediction, (UserPrediction.prediction_timestamp,), lambda row: {
+                "id": row.id, "race_id": row.race_id, "horse_number": row.horse_number, "payload": row.payload,
+                "prediction_timestamp": self._iso(row.prediction_timestamp),
+            }),
+            ("race_results", RaceResult, (RaceResult.stored_at,), lambda row: {
+                "race_id": row.race_id, "payload": row.payload, "result_timestamp": row.result_timestamp,
+                "stored_at": self._iso(row.stored_at),
+            }),
+            ("prediction_reviews", PredictionReview, (PredictionReview.created_at,), lambda row: {
+                "id": row.id, "race_id": row.race_id, "payload": row.payload, "created_at": self._iso(row.created_at),
+            }),
+            ("past_performances", PastPerformance, (PastPerformance.stored_at,), lambda row: {
+                "id": row.id, "horse_id": row.horse_id, "observed_in_race_id": row.observed_in_race_id,
+                "race_date": row.race_date, "racecourse": row.racecourse, "race_name": row.race_name,
+                "finish_position": row.finish_position, "payload": row.payload, "stored_at": self._iso(row.stored_at),
+            }),
+            ("model_evaluations", ModelEvaluation, (ModelEvaluation.evaluated_at,), lambda row: {
+                "model_version": row.model_version, "feature_version": row.feature_version,
+                "evaluation_period": row.evaluation_period, "brier_score": row.brier_score,
+                "log_loss": row.log_loss, "calibration_error": row.calibration_error,
+                "top3_hit_rate": row.top3_hit_rate, "training_start": row.training_start,
+                "training_end": row.training_end, "evaluation_start": row.evaluation_start,
+                "evaluation_end": row.evaluation_end, "top3_recall": row.top3_recall,
+                "winner_rank_mean": row.winner_rank_mean,
+                "prediction_top3_mean_finish": row.prediction_top3_mean_finish,
+                "relative_finish_error": row.relative_finish_error, "sample_count": row.sample_count,
+                "race_count": row.race_count, "horse_count": row.horse_count,
+                "evaluation_variant": row.evaluation_variant, "metrics_json": row.metrics_json,
+                "evaluated_at": self._iso(row.evaluated_at),
+            }),
+            ("training_runs", TrainingRun, (TrainingRun.trained_at,), lambda row: {
+                "model_version": row.model_version, "trained_at": self._iso(row.trained_at),
+                "training_start": row.training_start, "training_end": row.training_end,
+                "feature_version": row.feature_version, "label": row.label, "status": row.status,
+                "row_count": row.row_count, "race_count": row.race_count, "metrics_json": row.metrics_json,
+            }),
+            ("qualitative_evidence", QualitativeEvidence, (QualitativeEvidence.id,), lambda row: {
+                "source_type": row.source_type, "source_name": row.source_name, "source_url": row.source_url,
+                "published_at": self._iso(row.published_at), "author": row.author, "race_id": row.race_id,
+                "horse_id": row.horse_id, "raw_text": row.raw_text, "normalized_text": row.normalized_text,
+                "confidence": row.confidence, "content_hash": row.content_hash,
+                "collected_at": self._iso(row.collected_at),
+            }),
+            ("source_reliability", SourceReliability, (SourceReliability.id,), lambda row: {
+                "source_type": row.source_type, "source_name": row.source_name, "reliability": row.reliability,
+                "sample_count": row.sample_count, "metrics_json": row.metrics_json,
+                "updated_at": self._iso(row.updated_at),
+            }),
+        ]
+
+    def _export_counts(self) -> dict[str, int]:
+        return {
+            key: int(self.session.scalar(select(func.count()).select_from(model)) or 0)
+            for key, model, _, _ in self._export_specs()
         }
+
+    def export_data(self) -> dict:
+        specs = self._export_specs()
+        data = {}
+        for key, model, order_by, convert in specs:
+            statement = select(model).order_by(*order_by).execution_options(yield_per=self.EXPORT_CHUNK_SIZE)
+            data[key] = [convert(row) for row in self.session.scalars(statement)]
         return {
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "format_version": self.EXPORT_FORMAT_VERSION,
-            "counts": {key: len(value) for key, value in data.items()},
+            "counts": {key: len(rows) for key, rows in data.items()},
             "data": data,
         }
 
-    def training_dataset(self) -> dict:
-        reviews = self._latest_reviews_by_race()
-        races = {row.race_id: row for row in self.session.scalars(select(Race)).all()}
-        snapshots = self._latest_snapshots_by_race_and_horse()
-        result_entries = {
-            (row.race_id, row.horse_number): row
-            for row in self.session.scalars(select(RaceResultEntry)).all()
-        }
-        rows = []
-        feature_columns: set[str] = set()
-        excluded_counts = {"unsupported_race_type": 0, "invalid_prediction_time": 0}
-        for review in reviews:
-            race = races.get(review.race_id)
-            if race is None or not is_supported_flat_race(
-                self._field_value(race.payload or {}, "surface"),
-                self._field_value(race.payload or {}, "race_class"),
-            ):
-                excluded_counts["unsupported_race_type"] += 1
-                continue
-            for review_row in (review.payload or {}).get("rows", []):
-                horse_number = review_row.get("horse_number")
-                actual_win = review_row.get("actual_win")
-                if horse_number is None or actual_win is None:
+    def iter_export_json(self):
+        import json
+
+        counts = self._export_counts()
+        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+        yield "{\"exported_at\":" + encoder.encode(datetime.now(timezone.utc).isoformat())
+        yield ",\"format_version\":" + encoder.encode(self.EXPORT_FORMAT_VERSION)
+        yield ",\"counts\":" + encoder.encode(counts) + ",\"data\":{"
+        for spec_index, (key, model, order_by, convert) in enumerate(self._export_specs()):
+            if spec_index:
+                yield ","
+            yield encoder.encode(key) + ":["
+            statement = select(model).order_by(*order_by).execution_options(yield_per=self.EXPORT_CHUNK_SIZE)
+            first = True
+            for row in self.session.scalars(statement):
+                if not first:
+                    yield ","
+                first = False
+                yield from encoder.iterencode(convert(row))
+            yield "]"
+        yield "}}"
+
+    def _iter_training_dataset_rows(self, summary: dict):
+        summary.update({
+            "row_count": 0,
+            "race_ids": set(),
+            "feature_columns": set(),
+            "excluded_counts": {"unsupported_race_type": 0, "invalid_prediction_time": 0},
+        })
+        for review_chunk in self._iter_chunks(self._iter_latest_reviews_by_race(), self.QUERY_CHUNK_SIZE):
+            race_ids = {row.race_id for row in review_chunk}
+            races = {}
+            result_entries = {}
+            for race_id_chunk in self._chunks(sorted(race_ids), self.QUERY_CHUNK_SIZE):
+                for row in self.session.scalars(select(Race).where(Race.race_id.in_(race_id_chunk))):
+                    races[row.race_id] = row
+                for row in self.session.scalars(
+                    select(RaceResultEntry).where(RaceResultEntry.race_id.in_(race_id_chunk))
+                ):
+                    result_entries[(row.race_id, row.horse_number)] = row
+            snapshots = self._latest_snapshots_by_race_and_horse(race_ids)
+            for review in review_chunk:
+                race = races.get(review.race_id)
+                if race is None or not is_supported_flat_race(
+                    self._field_value(race.payload or {}, "surface"),
+                    self._field_value(race.payload or {}, "race_class"),
+                ):
+                    summary["excluded_counts"]["unsupported_race_type"] += 1
                     continue
-                snapshot = snapshots.get((review.race_id, int(horse_number)))
-                if snapshot is None:
-                    excluded_counts["invalid_prediction_time"] += 1
-                    continue
-                lead_minutes = prediction_lead_minutes(
-                    race.race_date,
-                    self._field_value(race.payload or {}, "start_time"),
-                    snapshot.prediction_timestamp,
-                )
-                if lead_minutes is None or lead_minutes <= 0:
-                    excluded_counts["invalid_prediction_time"] += 1
-                    continue
-                features = self._training_features(snapshot.raw_features or {})
-                feature_columns.update(features.keys())
-                finish_position = review_row.get("finish_position")
-                result_entry = result_entries.get((review.race_id, int(horse_number)))
-                field_size = (
-                    result_entry.field_size
-                    if result_entry is not None and result_entry.field_size is not None
-                    else self._field_value(race.payload or {}, "field_size")
-                )
-                relative_value = (
-                    result_entry.relative_finish
-                    if result_entry is not None and result_entry.relative_finish is not None
-                    else relative_finish(finish_position, field_size)
-                )
-                rows.append(
-                    {
+                for review_row in (review.payload or {}).get("rows", []):
+                    horse_number = review_row.get("horse_number")
+                    actual_win = review_row.get("actual_win")
+                    if horse_number is None or actual_win is None:
+                        continue
+                    snapshot = snapshots.get((review.race_id, int(horse_number)))
+                    if snapshot is None:
+                        summary["excluded_counts"]["invalid_prediction_time"] += 1
+                        continue
+                    lead_minutes = prediction_lead_minutes(
+                        race.race_date,
+                        self._field_value(race.payload or {}, "start_time"),
+                        snapshot.prediction_timestamp,
+                    )
+                    if lead_minutes is None or lead_minutes <= 0:
+                        summary["excluded_counts"]["invalid_prediction_time"] += 1
+                        continue
+                    features = self._training_features(snapshot.raw_features or {})
+                    summary["feature_columns"].update(features.keys())
+                    finish_position = review_row.get("finish_position")
+                    result_entry = result_entries.get((review.race_id, int(horse_number)))
+                    field_size = (
+                        result_entry.field_size
+                        if result_entry is not None and result_entry.field_size is not None
+                        else self._field_value(race.payload or {}, "field_size")
+                    )
+                    relative_value = (
+                        result_entry.relative_finish
+                        if result_entry is not None and result_entry.relative_finish is not None
+                        else relative_finish(finish_position, field_size)
+                    )
+                    row = {
                         "race_id": review.race_id,
                         "race_date": race.race_date if race else None,
                         "racecourse": race.racecourse if race else None,
@@ -851,22 +785,55 @@ class RaceRepository:
                         "relative_finish": relative_value,
                         "actual_win": float(actual_win),
                         "actual_top3": bool(finish_position is not None and int(finish_position) <= 3),
-                        "actual_top5": (
-                            bool(int(finish_position) <= 5) if finish_position is not None else None
-                        ),
+                        "actual_top5": bool(int(finish_position) <= 5) if finish_position is not None else None,
                         "result_status": review_row.get("result_status"),
                         "features": features,
                     }
-                )
+                    summary["row_count"] += 1
+                    summary["race_ids"].add(review.race_id)
+                    yield row
+    def _training_dataset_metadata(self, summary: dict) -> dict:
         return {
-            "row_count": len(rows),
-            "race_count": len({row["race_id"] for row in rows}),
-            "feature_columns": sorted(feature_columns),
+            "row_count": summary["row_count"],
+            "race_count": len(summary["race_ids"]),
+            "feature_columns": sorted(summary["feature_columns"]),
             "label_columns": ["actual_win", "actual_top3", "actual_top5", "finish_position", "relative_finish"],
-            "excluded_counts": excluded_counts,
+            "excluded_counts": summary["excluded_counts"],
+        }
+
+    def training_dataset(self) -> dict:
+        summary = {}
+        rows = list(self._iter_training_dataset_rows(summary))
+        return {
+            **self._training_dataset_metadata(summary),
             "rows": rows,
             "note": "1行=1レース1頭です。最新reviewとprediction_snapshots.raw_featuresを結合しています。",
         }
+
+    def iter_training_dataset_json(self):
+        import json
+        from tempfile import SpooledTemporaryFile
+
+        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+        summary = {}
+        with SpooledTemporaryFile(mode="w+t", encoding="utf-8", max_size=2 * 1024 * 1024) as rows_file:
+            first = True
+            for row in self._iter_training_dataset_rows(summary):
+                if not first:
+                    rows_file.write(",")
+                first = False
+                rows_file.write(encoder.encode(row))
+            header = encoder.encode(self._training_dataset_metadata(summary))[:-1] + ',"rows":['
+            yield header
+            rows_file.seek(0)
+            while True:
+                chunk = rows_file.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            yield '],"note":' + encoder.encode(
+                "1行=1レース1頭です。最新reviewとprediction_snapshots.raw_featuresを結合しています。"
+            ) + "}"
 
     def import_data(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
@@ -1317,32 +1284,63 @@ class RaceRepository:
             .limit(limit)
         ).all()
 
-    def _latest_snapshots_by_race_and_horse(self) -> dict[tuple[str, int], PredictionSnapshot]:
-        rows = self.session.scalars(
-            select(PredictionSnapshot)
-            .outerjoin(RaceResult, RaceResult.race_id == PredictionSnapshot.race_id)
-            .where(
-                or_(
-                    RaceResult.race_id.is_(None),
-                    PredictionSnapshot.prediction_timestamp <= RaceResult.stored_at,
+    def _latest_snapshots_by_race_and_horse(
+        self, race_ids: set[str]
+    ) -> dict[tuple[str, int], PredictionSnapshot]:
+        if not race_ids:
+            return {}
+        races = {}
+        for race_id_chunk in self._chunks(sorted(race_ids), self.QUERY_CHUNK_SIZE):
+            races.update({
+                row.race_id: row
+                for row in self.session.scalars(select(Race).where(Race.race_id.in_(race_id_chunk)))
+            })
+        cutoffs = {}
+        for race_id, race in races.items():
+            start = race_start_datetime(race.race_date, self._field_value(race.payload or {}, "start_time"))
+            if start is not None:
+                cutoffs[race_id] = start.astimezone(timezone.utc).replace(tzinfo=None)
+        latest = {}
+        eligible_ids = sorted(cutoffs)
+        for race_id_chunk in self._chunks(eligible_ids, self.QUERY_CHUNK_SIZE):
+            conditions = [
+                and_(PredictionSnapshot.race_id == race_id, PredictionSnapshot.prediction_timestamp < cutoffs[race_id])
+                for race_id in race_id_chunk
+            ]
+            ranked = (
+                select(
+                    PredictionSnapshot.id.label("snapshot_id"),
+                    func.row_number().over(
+                        partition_by=(PredictionSnapshot.race_id, PredictionSnapshot.horse_number),
+                        order_by=(PredictionSnapshot.prediction_timestamp.desc(), PredictionSnapshot.id.desc()),
+                    ).label("snapshot_rank"),
                 )
+                .outerjoin(RaceResult, RaceResult.race_id == PredictionSnapshot.race_id)
+                .where(
+                    or_(*conditions),
+                    or_(RaceResult.race_id.is_(None), PredictionSnapshot.prediction_timestamp <= RaceResult.stored_at),
+                )
+                .subquery()
             )
-            .order_by(PredictionSnapshot.prediction_timestamp.desc(), PredictionSnapshot.id.desc())
-        ).all()
-        races = {row.race_id: row for row in self.session.scalars(select(Race)).all()}
-        latest: dict[tuple[str, int], PredictionSnapshot] = {}
-        for row in rows:
-            race = races.get(row.race_id)
-            if race is not None:
-                lead = prediction_lead_minutes(
-                    race.race_date,
-                    self._field_value(race.payload or {}, "start_time"),
-                    row.prediction_timestamp,
-                )
-                if lead is None or lead <= 0:
-                    continue
-            latest.setdefault((row.race_id, row.horse_number), row)
+            rows = self.session.scalars(
+                select(PredictionSnapshot)
+                .join(ranked, ranked.c.snapshot_id == PredictionSnapshot.id)
+                .where(ranked.c.snapshot_rank == 1)
+            )
+            for snapshot in rows:
+                latest[(snapshot.race_id, snapshot.horse_number)] = snapshot
         return latest
+
+    @staticmethod
+    def _chunks(values: list, size: int):
+        for start in range(0, len(values), size):
+            yield values[start:start + size]
+
+    @staticmethod
+    def _iter_chunks(values, size: int):
+        iterator = iter(values)
+        while chunk := list(islice(iterator, size)):
+            yield chunk
 
     def _training_features(self, raw_features: dict) -> dict:
         return {
@@ -1551,7 +1549,7 @@ class RaceRepository:
         race_class = self._field_value(race_payload, "race_class")
         field_size = self._field_value(race_payload, "field_size")
         field_size = int(field_size or len(result.entries)) if result.entries else None
-        snapshots = self._latest_snapshots_by_race_and_horse()
+        snapshots = self._latest_snapshots_by_race_and_horse({result.race_id})
         entries = {
             entry.horse_number: entry
             for entry in self.session.scalars(select(RaceEntry).where(RaceEntry.race_id == result.race_id)).all()
@@ -1887,13 +1885,24 @@ class RaceRepository:
         return [review for review in reviews if review.race_id in eligible_race_ids]
 
     def _latest_reviews_by_race(self) -> list[PredictionReview]:
-        rows = self.session.scalars(
-            select(PredictionReview).order_by(PredictionReview.created_at, PredictionReview.id)
-        ).all()
-        latest: dict[str, PredictionReview] = {}
-        for row in rows:
-            latest[row.race_id] = row
-        return list(latest.values())
+        return list(self._iter_latest_reviews_by_race())
+
+    def _iter_latest_reviews_by_race(self):
+        ranked = select(
+            PredictionReview.id.label("review_id"),
+            func.row_number().over(
+                partition_by=PredictionReview.race_id,
+                order_by=(PredictionReview.created_at.desc(), PredictionReview.id.desc()),
+            ).label("review_rank"),
+        ).subquery()
+        statement = (
+            select(PredictionReview)
+            .join(ranked, ranked.c.review_id == PredictionReview.id)
+            .where(ranked.c.review_rank == 1)
+            .order_by(PredictionReview.created_at, PredictionReview.id)
+            .execution_options(yield_per=self.QUERY_CHUNK_SIZE)
+        )
+        yield from self.session.scalars(statement)
 
     def _data_quality_summary(self) -> dict:
         runs = self.session.scalars(select(AnalysisRun)).all()

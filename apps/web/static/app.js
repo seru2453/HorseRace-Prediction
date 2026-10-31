@@ -224,8 +224,7 @@ async function exportData() {
   try {
     const response = await fetch("/api/export");
     if (!response.ok) throw new Error("export failed");
-    const payload = await response.json();
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
+    const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;

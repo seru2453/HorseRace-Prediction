@@ -89,12 +89,13 @@ JRA公式の公開結果ページも、結果選択ページからPOST遷移で�
 ## データ保存場所
 
 - SQLite: `data/db/keiba.sqlite3`
-- Automatic JSON backups: `data/backups/horseprediction-YYYY-MM-DD.json` (latest 20 files)
+- Automatic SQLite backups: `data/backups/horseprediction-YYYY-MM-DD.sqlite3` (latest 20 files)
 - JRA fetch cache: `data/cache/jra_official`
 - JRA fetch cache is refreshed after five minutes so the current race card is not masked by an older meeting page.
 - While `make dev` is running, today's schedule, predictions due within two hours, and saved races awaiting results are checked every 30 minutes. The first check starts after 30 seconds. Each run logs schedule, predicted, already predicted, prediction pending, reviewed, result pending, and error counts.
 - `make pipeline` runs the same automation once. `make worker` runs it continuously without the UI.
-- `scripts/backup_database.py` writes the existing export format through an atomic temporary file, verifies it, and keeps at most 20 dated backups. Backups are local and ignored by Git; restore them with the app's `データ読込` action.
+- `scripts/backup_database.py` uses SQLite's online Backup API, checks the copied database, writes atomically, and keeps at most 20 dated backups. Backups are local and ignored by Git. To restore a SQLite backup, stop the app and copy the selected backup over `data/db/keiba.sqlite3`; JSON exports remain available through `データ読込`.
+- Local `/api/export` and `/api/training-dataset` responses stream JSON. Database exports fetch records in bounded batches, and training rows are staged through a size-limited temporary file so Flask does not build a second full response list.
 - Run `scripts/install_macos_autostart.sh` again after updating the repository to register the Saturday/Sunday schedule and final pipeline shutdown.
 
 ## テスト
