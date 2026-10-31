@@ -254,6 +254,9 @@ def test_prediction_snapshots_create_normalized_metrics(tmp_path):
     assert metrics[0].current_form == first_prediction.current_form
     assert metrics[0].condition_fit == first_prediction.condition_fit
     assert metrics[0].field_size == len(analysis.entries)
+    snapshot = next(item for item in snapshots if item.horse_id == first_prediction.horse_id)
+    assert snapshot.prediction_payload["probability_diagnostics"]["relative_score_index"] is not None
+    assert snapshot.prediction_payload["probability_diagnostics"]["raw_probability_stddev"] >= 0
 
 
 def test_challenger_predictions_are_linked_to_immutable_snapshots(tmp_path):

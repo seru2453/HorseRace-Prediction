@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import re
+from statistics import mean, pstdev
 
 from services.common.models import HorseFeature, PredictionData
 from services.features.generator import FEATURE_VERSION
@@ -51,6 +53,9 @@ class RuleBasedPredictor:
             uncertainties.append(uncertainty)
         calibrated_total = sum(calibrated) or 1.0
         calibrated = [value / calibrated_total for value in calibrated]
+        diagnostics = self._probability_diagnostics(
+            [item.horse_id for item in active], details, raw_probabilities, calibrated
+        )
         predictions: list[PredictionData] = []
         for item, detail, raw_probability, win, confidence, uncertainty, base_rank, final_rank in zip(
             active,
@@ -102,6 +107,7 @@ class RuleBasedPredictor:
                     },
                     raw_probability=round(raw_probability, 6),
                     calibrated_probability=round(win, 6),
+                    probability_diagnostics=diagnostics[item.horse_id],
                     calibration_version="score-power-v1+conservative-uniform-shrinkage-v1",
                     base_rank=base_rank,
                     final_rank=final_rank,
@@ -163,6 +169,44 @@ class RuleBasedPredictor:
                 )
             )
         return sorted(predictions, key=lambda p: p.win_probability, reverse=True)
+
+    def _probability_diagnostics(
+        self,
+        horse_ids: list[str],
+        details: list[dict],
+        raw_probabilities: list[float],
+        calibrated_probabilities: list[float],
+    ) -> dict[str, dict[str, float | None]]:
+        count = len(details)
+        scores = [float(detail["final_score"]) for detail in details]
+        score_mean = mean(scores) if scores else 0.0
+        score_stddev = pstdev(scores) if len(scores) > 1 else 0.0
+        raw_stddev = pstdev(raw_probabilities) if len(raw_probabilities) > 1 else 0.0
+        calibrated_stddev = pstdev(calibrated_probabilities) if len(calibrated_probabilities) > 1 else 0.0
+        ordered_probabilities = sorted(calibrated_probabilities, reverse=True)
+        leader = ordered_probabilities[0] if ordered_probabilities else None
+        gap_to_second = leader - ordered_probabilities[1] if len(ordered_probabilities) > 1 else None
+        gap_to_fifth = leader - ordered_probabilities[4] if len(ordered_probabilities) > 4 else None
+        entropy = -sum(probability * math.log(probability) for probability in calibrated_probabilities if probability > 0)
+        normalized_entropy = entropy / math.log(count) if count > 1 else 0.0
+        calibration_spread_ratio = calibrated_stddev / raw_stddev if raw_stddev > 0 else None
+        output = {}
+        for horse_id, detail, raw_probability in zip(horse_ids, details, raw_probabilities, strict=True):
+            score = float(detail["final_score"])
+            relative_index = 50.0 + 15.0 * ((score - score_mean) / score_stddev) if score_stddev > 0 else 50.0
+            output[horse_id] = {
+                "relative_score_index": round(relative_index, 6),
+                "final_score_stddev": round(score_stddev, 6),
+                "raw_probability_stddev": round(raw_stddev, 6),
+                "calibrated_probability_stddev": round(calibrated_stddev, 6),
+                "calibration_spread_ratio": round(calibration_spread_ratio, 6) if calibration_spread_ratio is not None else None,
+                "normalized_entropy": round(normalized_entropy, 6),
+                "leader_probability": round(leader, 6) if leader is not None else None,
+                "leader_gap_to_second": round(gap_to_second, 6) if gap_to_second is not None else None,
+                "leader_gap_to_fifth": round(gap_to_fifth, 6) if gap_to_fifth is not None else None,
+                "raw_probability": round(raw_probability, 6),
+            }
+        return output
 
     def _score(self, item: HorseFeature) -> float:
         score, _ = self._score_breakdown(item)

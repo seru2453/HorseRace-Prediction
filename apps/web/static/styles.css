@@ -28,8 +28,8 @@ body {
 .hero { display: grid; gap: 22px; padding-bottom: 22px; }
 .game-board { display: grid; gap: 0; }
 .app-icon { display: inline-block; width: 17px; height: 17px; flex: 0 0 17px; vertical-align: -.2em; }
-.app-header, .header-actions, .race-summary-main, .row-head, .prediction-head, .probability-line, .prediction-quick-metrics { display: flex; align-items: center; }
-.app-header, .race-summary-main, .row-head, .prediction-head, .probability-line { justify-content: space-between; }
+.app-header, .header-actions, .race-summary-main, .row-head, .prediction-head { display: flex; align-items: center; }
+.app-header, .race-summary-main, .row-head, .prediction-head { justify-content: space-between; }
 .app-header {
   display: flex;
   flex-direction: row;
@@ -124,12 +124,10 @@ button:not(.btn), .inline-button { min-height: 38px; border: 1px solid #d1d5db; 
 .prediction-head { min-height: 30px; }
 .horse-number { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1.02rem; font-weight: 650; }
 .horse-number b { display: inline-grid; width: 26px; height: 26px; place-items: center; margin-right: 5px; border-radius: 7px; background: #f3f4f6; color: #374151; font-size: .82rem; }
-.rating-line { flex: 0 0 auto; color: var(--gold); white-space: nowrap; font-size: .85rem; }
-.probability-line { gap: 12px; margin-top: 14px; }
-.probability-line > strong { width: 58px; text-align: right; font-size: 1.08rem; font-variant-numeric: tabular-nums; }
 .probability-bar { height: 7px; flex: 1; overflow: hidden; border-radius: 99px; background: #e8ecef; }
 .probability-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
-.prediction-quick-metrics { flex-wrap: wrap; gap: 8px 14px; margin-top: 13px; color: var(--muted); font-size: .79rem; }
+.prediction-quick-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.prediction-quick-metrics span { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid #edf0f2; border-radius: 8px; background: #f8f9fa; color: var(--muted); font-size: .75rem; }
 .prediction-quick-metrics b { color: var(--text); font-weight: 650; }
 .expected-value-positive b { color: var(--accent); }
 .reason-details { margin-top: 14px; border-top: 1px solid #eef0f2; padding-top: 10px; }
@@ -196,7 +194,6 @@ dialog::backdrop { background: rgb(17 24 39 / 45%); }
   .user-grid textarea { grid-column: auto; }
   .metrics { gap: 5px; }
   .prediction { padding: 14px; }
-  .prediction-quick-metrics { justify-content: space-between; gap: 7px; }
-  .prediction-quick-metrics span { display: grid; }
+  .prediction-quick-metrics { gap: 6px; }
   .utility-menu-panel { width: 180px; }
 }

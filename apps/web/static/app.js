@@ -319,11 +319,14 @@ function renderAnalysis() {
     document.querySelector("#analysis").innerHTML = `<article class="analysis-card">${current.result_only ? "発走済みのレースのため、事後予測は作成していません。結果タブに公式着順を表示しています。" : "保存済みAI予測はありません。"}</article>`;
     return;
   }
-  const topWinProbability = Math.max(...current.predictions.map((prediction) => Number(prediction.win_probability)));
+  const entriesByNumber = new Map(current.entries.map((entry) => [Number(entry.horse_number.value), entry]));
   document.querySelector("#analysis").innerHTML = current.predictions.map((prediction, index) => {
-    const relativeStrength = topWinProbability > 0
-      ? Math.max(4, Math.round(Number(prediction.win_probability) / topWinProbability * 100))
-      : 0;
+    const entry = entriesByNumber.get(Number(prediction.horse_number));
+    const popularity = entry?.popularity?.value;
+    const popularityNumber = Number(popularity);
+    const popularityLabel = Number.isInteger(popularityNumber) && popularityNumber > 0
+      ? `${popularityNumber}番人気`
+      : "-";
     const positive = limitedReasons(prediction.explanation.positive).slice(0, 3);
     const negative = limitedReasons(prediction.explanation.negative).slice(0, 3);
     return `
@@ -332,16 +335,10 @@ function renderAnalysis() {
         <div class="prediction-body">
           <div class="prediction-head">
             <span class="horse-number"><b>${prediction.horse_number}</b> ${prediction.horse_name}</span>
-            <span class="rating-line">${strengthStars(prediction.win_probability, topWinProbability)}</span>
-          </div>
-          <div class="probability-line">
-            <div class="probability-bar" aria-label="相対強度 ${relativeStrength}%"><span style="width:${relativeStrength}%"></span></div>
-            <strong>${percent(prediction.win_probability)}</strong>
           </div>
           <div class="prediction-quick-metrics">
             <span>勝率 <b>${percent(prediction.win_probability)}</b></span>
-            <span>複勝圏 <b>${percent(prediction.top3_probability)}</b></span>
-            <span>信頼度 <b>${percent(prediction.confidence)}</b></span>
+            <span>人気 <b>${popularityLabel}</b></span>
             ${expectedValueMetric(prediction)}
           </div>
           ${(positive.length || negative.length) ? `
@@ -651,17 +648,21 @@ async function renderSnapshots() {
         <div class="meta">seed ${snapshots[0].simulation_seed} / ${snapshots[0].model_version} / ${snapshots[0].feature_version}</div>
         <div class="meta">${snapshots[0].prediction_timestamp ?? ""}</div>
       </article>
-      ${snapshots.map((snapshot) => `
+      ${snapshots.map((snapshot) => {
+        const popularity = Number(snapshot.raw_features?.popularity);
+        const popularityLabel = Number.isFinite(popularity) && popularity > 0 ? `${popularity}番人気` : "-";
+        return `
         <article class="review-row">
           <strong>${snapshot.horse_number} ${snapshot.prediction.horse_name}</strong>
           <div class="metrics">
             <div class="metric">勝率<b>${percent(snapshot.ai_win_probability)}</b></div>
-            <div class="metric">連対率<b>${percent(snapshot.ai_top2_probability)}</b></div>
-            <div class="metric">複勝圏<b>${percent(snapshot.ai_top3_probability)}</b></div>
+            <div class="metric">人気<b>${popularityLabel}</b></div>
+            ${expectedValueMetric(snapshot.prediction || {})}
           </div>
           <div class="meta">${featureDigest(snapshot.raw_features)}</div>
         </article>
-      `).join("")}
+      `;
+      }).join("")}
     `;
   } catch {
     panel.innerHTML = `<article class="analysis-card">保存済みAI予測を取得できませんでした。</article>`;
@@ -727,7 +728,6 @@ async function renderHistoryDetail(raceId) {
     const userPredictions = detail.latest_user_predictions || {};
     const analysisRun = detail.latest_analysis_run;
     const featureQuality = analysisRun?.payload?.feature_quality || {};
-    const topWinProbability = Math.max(...predictions.map((prediction) => Number(prediction.win_probability)), 0);
     const reviewRows = detail.latest_review?.rows || [];
     detailPanel.innerHTML = `
       <article class="analysis-card">
@@ -744,7 +744,6 @@ async function renderHistoryDetail(raceId) {
         <article class="review-row">
           <div class="row-head">
             <strong>${prediction.horse_number} ${prediction.horse_name}</strong>
-            <span class="rating-line">${strengthStars(prediction.win_probability, topWinProbability)} <span class="meta">信頼度 ${percent(prediction.confidence)}</span></span>
           </div>
           <div class="metrics">
             <div class="metric">勝率<b>${percent(prediction.win_probability)}</b></div>
@@ -781,7 +780,6 @@ async function renderLearningDetail(raceId) {
     const detail = await response.json();
     const race = detail.race;
     const predictions = detail.latest_predictions || [];
-    const topWinProbability = Math.max(...predictions.map((prediction) => Number(prediction.win_probability)), 0);
     const reviewRows = detail.latest_review?.rows || [];
     detailPanel.innerHTML = `
       <article class="analysis-card">
@@ -796,7 +794,6 @@ async function renderLearningDetail(raceId) {
         <article class="review-row">
           <div class="row-head">
             <strong>${prediction.horse_number} ${prediction.horse_name}</strong>
-            <span class="rating-line">${strengthStars(prediction.win_probability, topWinProbability)} <span class="meta">信頼度 ${percent(prediction.confidence)}</span></span>
           </div>
           <div class="meta">勝率 ${percent(prediction.win_probability)} / 連対 ${percent(prediction.top2_probability)} / 複勝圏 ${percent(prediction.top3_probability)}</div>
         </article>
@@ -1180,9 +1177,11 @@ function percent(value) {
 }
 function expectedValueMetric(prediction) {
   const rawValue = prediction?.expected_value_index;
-  if (rawValue === null || rawValue === undefined || rawValue === "") return "";
+  if (rawValue === null || rawValue === undefined || rawValue === "") {
+    return `<span class="expected-value" title="単勝オッズ未取得のため算出できません">期待値 <b>-</b></span>`;
+  }
   const value = Number(rawValue);
-  if (!Number.isFinite(value)) return "";
+  if (!Number.isFinite(value)) return `<span class="expected-value">期待値 <b>-</b></span>`;
   const adjusted = Boolean(prediction.expected_value_is_adjusted);
   const label = adjusted ? "補正期待値" : "期待値";
   const title = adjusted
@@ -1459,14 +1458,6 @@ function featureDigest(features) {
 }
 function limitedReasons(items) {
   return (items || []).slice(0, 5);
-}
-function strengthStars(winProbability, topWinProbability) {
-  const ratio = topWinProbability > 0 ? Number(winProbability) / topWinProbability : 0;
-  const score = Math.max(1, Math.min(5, Math.round((1 + ratio * 4) * 2) / 2));
-  const full = Math.floor(score);
-  const hasHalf = score % 1 !== 0;
-  const empty = 5 - full - (hasHalf ? 1 : 0);
-  return `${"★".repeat(full)}${hasHalf ? "½" : ""}${"☆".repeat(empty)} ${score.toFixed(1)}`;
 }
 function meaningfulUserPredictions(predictions) {
   const result = {};
