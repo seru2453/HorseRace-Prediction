@@ -102,6 +102,8 @@ make test
 make check
 ```
 
+Pull Request作成時と`main`へのpush時にGitHub Actionsの`CI / check`が`make check`を実行します。mainへのmerge前に必須にする場合は、GitHubの`Settings > Branches > main`で`CI / check`をrequired status checkに設定してください。
+
 ## 予想レポートCLI
 
 ```bash
@@ -203,7 +205,7 @@ make train
 - 保存済み分析には特徴量欠損サマリーも残し、過去走不足頭数と特徴量充足率を表示します。
 - 予測直前に未来情報混入ガードを実行し、結果系フィールドが特徴量に混ざった場合は分析を止めます。
 - 予測はデータ不足時の簡易ルールベースです。
-- Playwright E2Eは今後追加予定です。
+- Playwright E2Eは`make check`から実行します。CIはJRAへのライブ取得を行わず、fixtureとstubを使います。
 
 ## JRA-VAN移行方針
 
