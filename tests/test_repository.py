@@ -1,8 +1,9 @@
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+import json
 
 import pytest
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, func, select
 
 from database.models import (
     ChallengerPrediction,
@@ -352,7 +353,7 @@ def test_training_run_persists_walk_forward_evaluation(tmp_path):
         assert session.scalar(select(ModelEvaluation)).brier_score == 0.12
 
 
-def test_session_backfills_normalized_rows_from_legacy_json(tmp_path):
+def test_session_backfills_normalized_rows_from_legacy_json(tmp_path, monkeypatch):
     database_url = f"sqlite:///{tmp_path}/normalized-backfill.sqlite3"
     provider = MockProvider()
     analysis = RaceAnalysisService(provider=provider, database_url=database_url).analyze(
@@ -367,9 +368,13 @@ def test_session_backfills_normalized_rows_from_legacy_json(tmp_path):
         session.execute(delete(RaceResultEntry))
         session.commit()
 
+    monkeypatch.setattr("database.session.BACKFILL_CHUNK_SIZE", 2)
     with make_session_factory(database_url)() as session:
         metrics = session.scalars(select(PredictionMetric)).all()
         result_entries = session.scalars(select(RaceResultEntry)).all()
+    with make_session_factory(database_url)() as session:
+        assert session.scalar(select(func.count()).select_from(PredictionMetric)) == len(analysis.predictions)
+        assert session.scalar(select(func.count()).select_from(RaceResultEntry)) == len(result.entries)
 
     assert len(metrics) == len(analysis.predictions)
     assert len(result_entries) == len(result.entries)
@@ -413,6 +418,38 @@ def test_review_save_is_idempotent_and_duplicate_reads_use_latest_review(tmp_pat
                 race_id=analysis.race.race_id,
                 horse_id=first_prediction.horse_id,
                 horse_number=first_prediction.horse_number,
+                prediction_timestamp=datetime(2026, 8, 16, 5, 20, tzinfo=timezone.utc),
+                model_version="latest-prestart-model",
+                feature_version="feature-v1",
+                simulation_seed=2,
+                ai_win_probability=0.2,
+                ai_top2_probability=0.4,
+                ai_top3_probability=0.6,
+                raw_features={"safe_pre_race": True},
+                prediction_payload=first_prediction.model_dump(mode="json"),
+            )
+        )
+        session.add(
+            PredictionSnapshot(
+                race_id=analysis.race.race_id,
+                horse_id=first_prediction.horse_id,
+                horse_number=first_prediction.horse_number,
+                prediction_timestamp=datetime(2026, 8, 16, 23, 59, tzinfo=timezone.utc),
+                model_version="after-start-model",
+                feature_version="feature-v1",
+                simulation_seed=3,
+                ai_win_probability=0.3,
+                ai_top2_probability=0.5,
+                ai_top3_probability=0.7,
+                raw_features={"post_start": True},
+                prediction_payload=first_prediction.model_dump(mode="json"),
+            )
+        )
+        session.add(
+            PredictionSnapshot(
+                race_id=analysis.race.race_id,
+                horse_id=first_prediction.horse_id,
+                horse_number=first_prediction.horse_number,
                 prediction_timestamp=datetime(2030, 1, 1, tzinfo=timezone.utc),
                 model_version="post-result-model",
                 feature_version="post-result-feature",
@@ -427,10 +464,13 @@ def test_review_save_is_idempotent_and_duplicate_reads_use_latest_review(tmp_pat
         session.commit()
 
         dataset = repo.training_dataset()
+        streamed_dataset = json.loads("".join(repo.iter_training_dataset_json()))
         summary = repo.learning_summary()
         history = repo.race_history()
+        latest_review_note = repo._latest_reviews_by_race()[0].payload["note"]
 
     assert dataset["row_count"] == len(analysis.predictions)
+    assert streamed_dataset == dataset
     assert len({(row["race_id"], row["horse_number"]) for row in dataset["rows"]}) == dataset["row_count"]
     assert "actual_top5" in dataset["label_columns"]
     assert all(
@@ -439,10 +479,13 @@ def test_review_save_is_idempotent_and_duplicate_reads_use_latest_review(tmp_pat
     )
     assert "actual_top5" not in dataset["feature_columns"]
     assert all(row["model_version"] != "post-result-model" for row in dataset["rows"])
+    first_horse_row = next(row for row in dataset["rows"] if row["horse_number"] == first_prediction.horse_number)
+    assert first_horse_row["model_version"] == "latest-prestart-model"
     assert summary["review_count"] == 1
     assert summary["ranking_metric_summary"]["top5_race_count"] == 0
     assert summary["ranking_metric_summary"]["top5_sample_status"] == "sample_small"
     assert history[0]["review_count"] == 1
+    assert latest_review_note == "latest"
 
 
 def test_top5_ranking_summary_aggregates_rates_and_marks_small_samples():
@@ -473,6 +516,34 @@ def test_top5_ranking_summary_aggregates_rates_and_marks_small_samples():
     assert summary["top5_capture_4of5_rate"] == 0.5
     assert summary["top5_capture_5of5_rate"] == 0.5
     assert summary["top5_sample_status"] == "sample_small"
+
+
+def test_streaming_export_preserves_legacy_json_format_across_chunks(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path}/stream-export.sqlite3"
+    factory = make_session_factory(database_url)
+    with factory() as session:
+        for index in range(5):
+            session.add(
+                Race(
+                    race_id=f"race-{index}",
+                    race_date=f"2026-08-{index + 1:02d}",
+                    racecourse="札幌",
+                    race_number=index + 1,
+                    payload={"race_id": f"race-{index}"},
+                )
+            )
+        session.commit()
+
+    monkeypatch.setattr(RaceRepository, "EXPORT_CHUNK_SIZE", 2)
+    with factory() as session:
+        repository = RaceRepository(session)
+        legacy = repository.export_data()
+        streamed = json.loads("".join(repository.iter_export_json()))
+
+    assert streamed["format_version"] == RaceRepository.EXPORT_FORMAT_VERSION
+    assert streamed["counts"] == legacy["counts"]
+    assert streamed["data"] == legacy["data"]
+    assert len(streamed["data"]["races"]) == 5
 
 
 def test_training_dataset_excludes_obstacle_race(tmp_path):

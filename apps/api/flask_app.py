@@ -5,7 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -362,15 +362,23 @@ def create_app() -> Flask:
     def export_data():
         if is_public_deployment():
             return local_only_response()
-        with session_factory() as session:
-            return jsonify(RaceRepository(session).export_data())
+
+        def stream_export():
+            with session_factory() as session:
+                yield from RaceRepository(session).iter_export_json()
+
+        return Response(stream_with_context(stream_export()), mimetype="application/json")
 
     @app.get("/api/training-dataset")
     def training_dataset():
         if is_public_deployment():
             return local_only_response()
-        with session_factory() as session:
-            return jsonify(RaceRepository(session).training_dataset())
+
+        def stream_dataset():
+            with session_factory() as session:
+                yield from RaceRepository(session).iter_training_dataset_json()
+
+        return Response(stream_with_context(stream_dataset()), mimetype="application/json")
 
     @app.post("/api/import")
     def import_data():

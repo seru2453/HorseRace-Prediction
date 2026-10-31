@@ -7,7 +7,7 @@ from pathlib import Path
 
 try:
     from fastapi import FastAPI, HTTPException
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without optional FastAPI deps
@@ -319,16 +319,24 @@ def race_detail(race_id: str):
 def export_data():
     if is_public_deployment():
         return _local_only_response()
-    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
-        return RaceRepository(session).export_data()
+
+    def stream_export():
+        with get_session_factory(os.getenv("DATABASE_URL"))() as session:
+            yield from RaceRepository(session).iter_export_json()
+
+    return StreamingResponse(stream_export(), media_type="application/json")
 
 
 @app.get("/api/training-dataset")
 def training_dataset():
     if is_public_deployment():
         return _local_only_response()
-    with get_session_factory(os.getenv("DATABASE_URL"))() as session:
-        return RaceRepository(session).training_dataset()
+
+    def stream_dataset():
+        with get_session_factory(os.getenv("DATABASE_URL"))() as session:
+            yield from RaceRepository(session).iter_training_dataset_json()
+
+    return StreamingResponse(stream_dataset(), media_type="application/json")
 
 
 @app.post("/api/import")
