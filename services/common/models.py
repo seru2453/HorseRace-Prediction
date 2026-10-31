@@ -161,6 +161,7 @@ class PredictionData(BaseModel):
     feature_group_adjustments: dict[str, float] = Field(default_factory=dict)
     raw_probability: float | None = None
     calibrated_probability: float | None = None
+    probability_diagnostics: dict[str, float | None] = Field(default_factory=dict)
     calibration_version: str = "none"
     base_rank: int | None = None
     final_rank: int | None = None

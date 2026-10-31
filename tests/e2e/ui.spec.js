@@ -89,9 +89,16 @@ test("analysis is visual and reopening defaults race date to today", async ({ pa
   expect(await predictions.count()).toBe(await page.locator("#entries .analysis-card").count());
   await expect(page.locator(".tabs button.active")).toHaveText("AI予想");
   await expect(predictions.first().locator(".prediction-rank small")).toHaveText("本命");
-  await expect(predictions.first().locator(".probability-bar span")).toBeVisible();
+  const predictionMetrics = predictions.first().locator(".prediction-quick-metrics");
+  await expect(predictionMetrics).toContainText("勝率");
+  await expect(predictionMetrics).toContainText("人気");
+  await expect(predictionMetrics).toContainText(/期待値|補正期待値/);
+  await expect(predictionMetrics).not.toContainText(/複勝圏|信頼度/);
+  await expect(predictions.first()).not.toContainText(/[★☆½]/);
+  await expect(predictions.first().locator(".probability-bar")).toHaveCount(0);
   await expect(predictions.first().locator(".expected-value")).toHaveText("補正期待値 1.60");
   await expect(predictions.first().locator(".factors")).not.toBeVisible();
+  await expect(predictions.first().locator(".reason-details")).toHaveCount(1);
 
   await predictions.first().locator(".reason-details summary").click();
   await expect(predictions.first().locator(".factors")).toBeVisible();

@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 import logging
+import math
+from statistics import pstdev
 
 import pytest
 
@@ -20,7 +22,13 @@ def test_prediction_probabilities_are_bounded_and_normalized(tmp_path):
     result = service.analyze(AnalysisRequest("2026-08-16", "札幌", 11, iterations=1000, save=False))
 
     total_win = sum(item.win_probability for item in result.predictions)
+    total_raw = sum(item.raw_probability for item in result.predictions)
+    total_calibrated = sum(item.calibrated_probability for item in result.predictions)
+    raw_stddev = pstdev([item.raw_probability for item in result.predictions])
+    calibrated_stddev = pstdev([item.calibrated_probability for item in result.predictions])
     assert 0.999 <= total_win <= 1.001
+    assert 0.999 <= total_raw <= 1.001
+    assert 0.999 <= total_calibrated <= 1.001
     for item in result.predictions:
         assert 0 <= item.win_probability <= 1
         assert 0 <= item.top2_probability <= 1
@@ -29,6 +37,19 @@ def test_prediction_probabilities_are_bounded_and_normalized(tmp_path):
         assert item.explanation["score_factors"][0] == "基礎点 +1.00"
         assert item.model_version == "baseline-v1"
         assert item.feature_version == "mvp-feature-v33"
+        diagnostics = item.probability_diagnostics
+        assert diagnostics["relative_score_index"] is not None
+        assert 0 <= diagnostics["normalized_entropy"] <= 1
+        assert diagnostics["raw_probability_stddev"] >= 0
+        assert diagnostics["calibrated_probability_stddev"] >= 0
+        assert diagnostics["calibration_spread_ratio"] is None or diagnostics["calibration_spread_ratio"] <= 1.001
+        assert diagnostics["leader_probability"] >= item.win_probability
+        assert diagnostics["leader_gap_to_second"] >= 0
+        assert diagnostics["raw_probability"] == pytest.approx(item.raw_probability)
+        assert all(value is None or math.isfinite(value) for value in diagnostics.values())
+        assert diagnostics["raw_probability_stddev"] == pytest.approx(raw_stddev, abs=1e-6)
+        assert diagnostics["calibrated_probability_stddev"] == pytest.approx(calibrated_stddev, abs=1e-6)
+        assert diagnostics["calibrated_probability_stddev"] <= diagnostics["raw_probability_stddev"] + 1e-6
 
 
 def test_analysis_rejects_post_start_prediction_when_enforced(tmp_path):
