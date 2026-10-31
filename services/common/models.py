@@ -159,6 +159,13 @@ class PredictionData(BaseModel):
     raw_condition_adjustment: float = 0.0
     condition_adjustment: float = 0.0
     feature_group_adjustments: dict[str, float] = Field(default_factory=dict)
+    raw_group_adjustments: dict[str, float] = Field(default_factory=dict)
+    hard_cap_final_score: float | None = None
+    soft_saturation_final_score: float | None = None
+    score_stability_mode: str = "hard_cap"
+    soft_saturation_raw_probability: float | None = None
+    soft_saturation_calibrated_probability: float | None = None
+    unclassified_score_factors: list[str] = Field(default_factory=list)
     raw_probability: float | None = None
     calibrated_probability: float | None = None
     probability_diagnostics: dict[str, float | None] = Field(default_factory=dict)
