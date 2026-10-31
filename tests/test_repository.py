@@ -429,9 +429,47 @@ def test_review_save_is_idempotent_and_duplicate_reads_use_latest_review(tmp_pat
 
     assert dataset["row_count"] == len(analysis.predictions)
     assert len({(row["race_id"], row["horse_number"]) for row in dataset["rows"]}) == dataset["row_count"]
+    assert "actual_top5" in dataset["label_columns"]
+    assert all(
+        row["actual_top5"] == (int(row["finish_position"]) <= 5 if row["finish_position"] is not None else None)
+        for row in dataset["rows"]
+    )
+    assert "actual_top5" not in dataset["feature_columns"]
     assert all(row["model_version"] != "post-result-model" for row in dataset["rows"])
     assert summary["review_count"] == 1
+    assert summary["ranking_metric_summary"]["top5_race_count"] == 0
+    assert summary["ranking_metric_summary"]["top5_sample_status"] == "sample_small"
     assert history[0]["review_count"] == 1
+
+
+def test_top5_ranking_summary_aggregates_rates_and_marks_small_samples():
+    summary = RaceRepository._ranking_metric_summary(
+        object(),
+        [
+            {"ranking_metrics": {
+                "winner_in_top5": True,
+                "top5_capture_count": 5,
+                "top5_capture_rate": 1.0,
+                "top5_capture_4of5": True,
+                "top5_capture_5of5": True,
+            }},
+            {"ranking_metrics": {
+                "winner_in_top5": False,
+                "top5_capture_count": 3,
+                "top5_capture_rate": 0.6,
+                "top5_capture_4of5": False,
+                "top5_capture_5of5": False,
+            }},
+        ],
+    )
+
+    assert summary["top5_race_count"] == 2
+    assert summary["winner_in_top5_rate"] == 0.5
+    assert summary["average_top5_capture_count"] == 4
+    assert summary["average_top5_capture_rate"] == 0.8
+    assert summary["top5_capture_4of5_rate"] == 0.5
+    assert summary["top5_capture_5of5_rate"] == 0.5
+    assert summary["top5_sample_status"] == "sample_small"
 
 
 def test_training_dataset_excludes_obstacle_race(tmp_path):

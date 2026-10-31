@@ -566,6 +566,17 @@ async function renderLearning() {
         <div class="meta">AI ${trendLabel(summary.trend_summary.ai_direction)} / 自分 ${trendLabel(summary.trend_summary.user_direction)} / ${summary.trend_summary.note}</div>
       </article>
       <article class="analysis-card">
+        <strong>AI Top5評価</strong>
+        <div class="metrics">
+          <div class="metric">評価レース<b>${summary.ranking_metric_summary.top5_race_count}</b></div>
+          <div class="metric">1着Top5率<b>${percent(summary.ranking_metric_summary.winner_in_top5_rate)}</b></div>
+          <div class="metric">平均捕捉<b>${summary.ranking_metric_summary.average_top5_capture_count ?? "-"} / 5</b></div>
+          <div class="metric">4/5以上<b>${percent(summary.ranking_metric_summary.top5_capture_4of5_rate)}</b></div>
+          <div class="metric">5/5<b>${percent(summary.ranking_metric_summary.top5_capture_5of5_rate)}</b></div>
+        </div>
+        <div class="meta">捕捉率 ${percent(summary.ranking_metric_summary.average_top5_capture_rate)} / ${summary.ranking_metric_summary.top5_sample_status === "sample_small" ? "標本少（100レース未満）" : "集計可"}</div>
+      </article>
+      <article class="analysis-card">
         <strong>自分予想</strong>
         <div class="meta">画面入力は印だけにしています。勝率や各評価は表示・入力しません。</div>
       </article>
