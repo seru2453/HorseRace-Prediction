@@ -10,7 +10,7 @@ module.exports = defineConfig({
     screenshot: "only-on-failure"
   },
   webServer: {
-    command: "AUTO_REVIEW_ENABLED=0 DATABASE_URL=sqlite:////private/tmp/horseprediction-playwright.sqlite3 PORT=8010 make dev",
+    command: "AUTO_REVIEW_ENABLED=0 DATABASE_URL=sqlite:////tmp/horseprediction-playwright.sqlite3 PORT=8010 make dev",
     url: "http://127.0.0.1:8010",
     reuseExistingServer: true,
     timeout: 30_000
