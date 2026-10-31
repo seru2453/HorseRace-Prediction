@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from dataclasses import dataclass
 from statistics import mean, pstdev
 
 from services.common.models import HorseFeature, PredictionData
@@ -10,6 +11,77 @@ from services.prediction.config import DEFAULT_STABILITY_CONFIG, StabilityConfig
 
 MODEL_VERSION = "baseline-v1"
 PARAMETER_VERSION = "rule-based-stable-v33"
+
+
+@dataclass(frozen=True)
+class FactorImpact:
+    key: str
+    label: str
+    group: str
+    amount: float
+
+
+_FACTOR_GROUPS = {
+    "FORM": ("近走", "前走複勝圏", "前走頭数補正", "前走大敗", "頭数補正着順", "上位半分率", "直近重み"),
+    "JEV": ("Jev定性評価",),
+    "REBOUND": ("一変", "リバウンド"),
+    "TRACK_BIAS": ("トラックバイアス",),
+    "PEDIGREE": ("父系", "母父", "血統"),
+    "JOCKEY": ("同騎手", "継続騎乗"),
+    "COURSE": ("同競馬場", "コース枠", "内枠"),
+    "DISTANCE": ("同距離", "距離替わり"),
+    "SURFACE": ("同馬場", "馬場替わり"),
+    "ROTATION": ("間隔", "ローテ", "標準ローテ", "余裕ローテ", "使い詰め", "長期休養"),
+    "PACE": ("先行", "差し", "道中押し上げ"),
+    "MARKET": ("単勝オッズ", "市場", "メンバー内市場", "人気"),
+    "LEARNING": ("学習補正",),
+    "PHYSICAL": ("斤量", "前走比斤量", "馬体重", "年齢"),
+    "ABILITY": (
+        "基礎点", "基礎能力指数ブレンド", "通算", "メンバー内通算", "賞金", "メンバー内賞金", "年齢", "人気以上", "人気薄",
+        "重賞", "大幅格上挑戦", "格上挑戦", "相手関係", "上がり3F", "補正後走破速度", "近走走破速度",
+    ),
+}
+
+
+def _factor_impact(factor: str) -> FactorImpact | None:
+    match = re.search(r"([+-]\d+(?:\.\d+)?)$", factor.strip())
+    if not match:
+        return None
+    label = factor[:match.start()].strip()
+    group = next((name for name, prefixes in _FACTOR_GROUPS.items() if any(label.startswith(p) for p in prefixes)), None)
+    if group is None:
+        return None
+    return FactorImpact(key=label, label=label, group=group, amount=float(match.group(1)))
+
+
+def _soft_saturate(raw: float, cap: float) -> float:
+    if cap <= 0:
+        return 0.0
+    return cap * math.tanh(raw / cap)
+
+
+def _composite_factor_amount(group: str, impacts: list[FactorImpact]) -> float:
+    if group == "MARKET":
+        buckets = {
+            "odds": [item.amount for item in impacts if item.label.startswith("単勝オッズ")],
+            "market_position": [
+                item.amount for item in impacts
+                if item.label.startswith(("市場", "メンバー内市場", "市場人気"))
+            ],
+        }
+    else:
+        buckets = {
+            "recent_performance": [
+                item.amount for item in impacts
+                if item.label.startswith(("近走平均着順", "近走複勝率", "前走複勝圏", "前走大敗気味", "近走勝ち切り", "近走凡走率", "近走上向き", "近走下降気味"))
+            ],
+            "consistency": [
+                item.amount for item in impacts
+                if item.label.startswith(("近走安定", "近走振れ幅大", "前走頭数補正", "頭数補正着順", "上位半分率"))
+            ],
+            "weighted_recent": [item.amount for item in impacts if item.label.startswith("直近重み")],
+        }
+    return sum(sum(values) / len(values) for values in buckets.values() if values)
 
 
 class RuleBasedPredictor:
@@ -32,36 +104,32 @@ class RuleBasedPredictor:
             if abs(detail["initial_rank_delta"]) >= self.config.rank_delta_high_risk and not detail["sufficient_evidence"]:
                 detail["condition_adjustment"] *= 0.5
                 detail["final_score"] = max(0.05, detail["base_ability_score"] + detail["condition_adjustment"])
+                detail["hard_cap_final_score"] = max(
+                    0.05, detail["base_ability_score"] + detail["hard_cap_condition_adjustment"] * 0.5
+                )
+                detail["soft_saturation_final_score"] = max(
+                    0.05, detail["base_ability_score"] + detail["soft_saturation_condition_adjustment"] * 0.5
+                )
                 detail["factors"].append("順位変動ガード 条件補正×0.50")
         final_ranks = self._rank_map([detail["final_score"] for detail in details])
-        raw_scores = [detail["final_score"] ** self.config.probability_score_exponent for detail in details]
-        total = sum(raw_scores) or 1.0
-        raw_probabilities = [score / total for score in raw_scores]
-        calibrated = []
-        confidences = []
-        uncertainties = []
-        uniform = 1.0 / len(active) if active else 0.0
-        for item, detail, base_rank, final_rank, raw_probability in zip(
-            active, details, base_ranks, final_ranks, raw_probabilities, strict=True
-        ):
-            rank_delta = base_rank - final_rank
-            confidence = self._confidence(item, rank_delta, detail["largest_absolute_adjustment"])
-            uncertainty = max(self.config.uncertainty_min, min(self.config.uncertainty_max, 1.0 - confidence))
-            shrinkage = min(self.config.probability_shrinkage_max, uncertainty * 0.35)
-            calibrated.append(raw_probability * (1.0 - shrinkage) + uniform * shrinkage)
-            confidences.append(confidence)
-            uncertainties.append(uncertainty)
-        calibrated_total = sum(calibrated) or 1.0
-        calibrated = [value / calibrated_total for value in calibrated]
+        raw_probabilities, calibrated, confidences, uncertainties = self._probabilities(
+            active, details, base_ranks, final_ranks, "final_score"
+        )
+        soft_ranks = self._rank_map([detail["soft_saturation_final_score"] for detail in details])
+        soft_raw, soft_calibrated, _, _ = self._probabilities(
+            active, details, base_ranks, soft_ranks, "soft_saturation_final_score"
+        )
         diagnostics = self._probability_diagnostics(
             [item.horse_id for item in active], details, raw_probabilities, calibrated
         )
         predictions: list[PredictionData] = []
-        for item, detail, raw_probability, win, confidence, uncertainty, base_rank, final_rank in zip(
+        for item, detail, raw_probability, win, soft_raw_probability, soft_win, confidence, uncertainty, base_rank, final_rank in zip(
             active,
             details,
             raw_probabilities,
             calibrated,
+            soft_raw,
+            soft_calibrated,
             confidences,
             uncertainties,
             base_ranks,
@@ -105,6 +173,15 @@ class RuleBasedPredictor:
                     feature_group_adjustments={
                         key: round(value, 6) for key, value in detail["feature_group_adjustments"].items()
                     },
+                    raw_group_adjustments={
+                        key: round(value, 6) for key, value in detail["raw_group_adjustments"].items()
+                    },
+                    hard_cap_final_score=round(detail["hard_cap_final_score"], 6),
+                    soft_saturation_final_score=round(detail["soft_saturation_final_score"], 6),
+                    score_stability_mode="soft_saturation" if self.config.use_soft_saturation else "hard_cap",
+                    soft_saturation_raw_probability=round(soft_raw_probability, 6),
+                    soft_saturation_calibrated_probability=round(soft_win, 6),
+                    unclassified_score_factors=detail["unclassified_score_factors"],
                     raw_probability=round(raw_probability, 6),
                     calibrated_probability=round(win, 6),
                     probability_diagnostics=diagnostics[item.horse_id],
@@ -142,7 +219,11 @@ class RuleBasedPredictor:
                     field_early_pressure=item.features.get("field_early_pressure"),
                     track_bias_adjustment=float(item.features.get("track_bias_adjustment") or 0.0),
                     track_bias_sample_status=str(item.features.get("track_bias_sample_status") or "UNKNOWN"),
-                    parameter_version=f"{PARAMETER_VERSION}+stability-v1",
+                    parameter_version=(
+                        f"{PARAMETER_VERSION}+soft-saturation-challenger-v1"
+                        if self.config.use_soft_saturation
+                        else f"{PARAMETER_VERSION}+stability-v1"
+                    ),
                     qualitative_adjustment=0.0,
                     qualitative_confidence=(
                         round(float((item.features.get("jev_qualitative") or {})["confidence"]), 4)
@@ -169,6 +250,35 @@ class RuleBasedPredictor:
                 )
             )
         return sorted(predictions, key=lambda p: p.win_probability, reverse=True)
+
+    def _probabilities(
+        self,
+        active: list[HorseFeature],
+        details: list[dict],
+        base_ranks: list[int],
+        final_ranks: list[int],
+        score_key: str,
+    ) -> tuple[list[float], list[float], list[float], list[float]]:
+        scores = [float(detail[score_key]) ** self.config.probability_score_exponent for detail in details]
+        total = sum(scores) or 1.0
+        raw_probabilities = [score / total for score in scores]
+        uniform = 1.0 / len(active) if active else 0.0
+        calibrated = []
+        confidences = []
+        uncertainties = []
+        for item, detail, base_rank, final_rank, raw_probability in zip(
+            active, details, base_ranks, final_ranks, raw_probabilities, strict=True
+        ):
+            rank_delta = base_rank - final_rank
+            confidence = self._confidence(item, rank_delta, detail["largest_absolute_adjustment"])
+            uncertainty = max(self.config.uncertainty_min, min(self.config.uncertainty_max, 1.0 - confidence))
+            shrinkage = min(self.config.probability_shrinkage_max, uncertainty * 0.35)
+            calibrated.append(raw_probability * (1.0 - shrinkage) + uniform * shrinkage)
+            confidences.append(confidence)
+            uncertainties.append(uncertainty)
+        calibrated_total = sum(calibrated) or 1.0
+        calibrated = [value / calibrated_total for value in calibrated]
+        return raw_probabilities, calibrated, confidences, uncertainties
 
     def _probability_diagnostics(
         self,
@@ -219,17 +329,31 @@ class RuleBasedPredictor:
     def _score_detail(self, item: HorseFeature) -> dict:
         raw_score, factors = self._raw_score_breakdown(item)
         grouped: dict[str, float] = {}
-        condition_impacts: list[tuple[str, float, str]] = []
+        grouped_impacts: dict[str, list[FactorImpact]] = {}
+        unclassified: list[str] = []
+        condition_impacts: list[FactorImpact] = []
         for factor in factors[1:]:
-            amount = self._factor_amount(factor)
-            if amount is None:
+            impact = _factor_impact(factor)
+            if impact is None:
+                if self._factor_amount(factor) is not None:
+                    unclassified.append(factor)
                 continue
-            group = self._factor_group(factor)
-            if group == "ABILITY":
+            if impact.group == "ABILITY":
                 continue
-            grouped[group] = grouped.get(group, 0.0) + amount
-            condition_impacts.append((factor, amount, group))
-        raw_condition = sum(value for _, value, _ in condition_impacts)
+            grouped_impacts.setdefault(impact.group, []).append(impact)
+            condition_impacts.append(impact)
+        legacy_grouped: dict[str, float] = {}
+        challenger_grouped: dict[str, float] = {}
+        for group, impacts in grouped_impacts.items():
+            amounts = [impact.amount for impact in impacts]
+            legacy_grouped[group] = sum(amounts)
+            if group in {"FORM", "MARKET"}:
+                # Combine correlated views into a few separate, readable signal families.
+                challenger_grouped[group] = _composite_factor_amount(group, impacts)
+            else:
+                challenger_grouped[group] = sum(amounts)
+        grouped = challenger_grouped if self.config.use_composite_form_market else legacy_grouped
+        raw_condition = sum(impact.amount for impact in condition_impacts)
         legacy_base_ability = max(0.05, raw_score - raw_condition)
         base_ability = legacy_base_ability
         ability_index = item.features.get("base_ability_index")
@@ -241,23 +365,32 @@ class RuleBasedPredictor:
             base_ability = legacy_base_ability * (1.0 - blend) + indexed_base_ability * blend
             factors.append(f"基礎能力指数ブレンド {base_ability - legacy_base_ability:+.2f}")
         applied_groups: dict[str, float] = {}
+        hard_groups: dict[str, float] = {}
+        soft_groups: dict[str, float] = {}
+        for group, value in legacy_grouped.items():
+            cap = self.config.feature_group_caps.get(group, self.config.condition_adjustment_cap)
+            hard_groups[group] = max(-cap, min(cap, value))
+        for group, value in challenger_grouped.items():
+            cap = self.config.feature_group_caps.get(group, self.config.condition_adjustment_cap)
+            soft_groups[group] = _soft_saturate(value, cap)
         for group, value in grouped.items():
             cap = self.config.feature_group_caps.get(group, self.config.condition_adjustment_cap)
-            applied_groups[group] = max(-cap, min(cap, value))
+            applied_groups[group] = soft_groups[group] if self.config.use_soft_saturation else hard_groups[group]
             if abs(value - applied_groups[group]) >= 0.005:
                 factors.append(f"安定化 {group}上限 {value:+.2f}→{applied_groups[group]:+.2f}")
         grouped_total = sum(applied_groups.values())
-        applied_condition = max(
-            -self.config.condition_adjustment_cap,
-            min(self.config.condition_adjustment_cap, grouped_total),
-        )
+        hard_group_total = sum(hard_groups.values())
+        soft_group_total = sum(soft_groups.values())
+        hard_condition = max(-self.config.condition_adjustment_cap, min(self.config.condition_adjustment_cap, hard_group_total))
+        soft_condition = _soft_saturate(soft_group_total, self.config.condition_adjustment_cap)
+        applied_condition = soft_condition if self.config.use_soft_saturation else hard_condition
         if abs(grouped_total - applied_condition) >= 0.005:
             factors.append(f"安定化 条件補正上限 {grouped_total:+.2f}→{applied_condition:+.2f}")
-        positive = [item for item in condition_impacts if item[1] > 0]
-        negative = [item for item in condition_impacts if item[1] < 0]
-        largest_positive = max((item[1] for item in positive), default=0.0)
-        largest_negative = min((item[1] for item in negative), default=0.0)
-        largest = max(condition_impacts, key=lambda item: abs(item[1]), default=(None, 0.0, None))
+        positive = [item for item in condition_impacts if item.amount > 0]
+        negative = [item for item in condition_impacts if item.amount < 0]
+        largest_positive = max((item.amount for item in positive), default=0.0)
+        largest_negative = min((item.amount for item in negative), default=0.0)
+        largest = max(condition_impacts, key=lambda item: abs(item.amount), default=None)
         sufficient_evidence = any(
             item.features.get(key) == "SUFFICIENT"
             for key in (
@@ -279,8 +412,15 @@ class RuleBasedPredictor:
             "factors": factors,
             "largest_positive_adjustment": largest_positive,
             "largest_negative_adjustment": largest_negative,
-            "largest_absolute_adjustment": abs(largest[1]),
-            "adjustment_source": largest[0],
+            "largest_absolute_adjustment": abs(largest.amount) if largest else 0.0,
+            "adjustment_source": largest.label if largest else None,
+            "raw_group_adjustments": legacy_grouped,
+            "unclassified_score_factors": unclassified,
+            "hard_cap_final_score": max(0.05, base_ability + hard_condition),
+            "soft_saturation_final_score": max(0.05, base_ability + soft_condition),
+            "hard_cap_condition_adjustment": hard_condition,
+            "soft_saturation_condition_adjustment": soft_condition,
+            "soft_saturation_shadow": self.config.use_soft_saturation,
             "sufficient_evidence": sufficient_evidence,
         }
 
@@ -288,36 +428,9 @@ class RuleBasedPredictor:
         match = re.search(r"([+-]\d+(?:\.\d+)?)$", factor.strip())
         return float(match.group(1)) if match else None
 
-    def _factor_group(self, factor: str) -> str:
-        if factor.startswith("学習補正 "):
-            return "LEARNING"
-        groups = {
-            "FORM": (
-                "近走",
-                "前走複勝圏",
-                "前走頭数補正",
-                "前走大敗",
-                "頭数補正着順",
-                "上位半分率",
-                "直近重み",
-            ),
-            "JEV": ("Jev定性評価",),
-            "REBOUND": ("一変", "リバウンド"),
-            "TRACK_BIAS": ("トラックバイアス",),
-            "PEDIGREE": ("父系", "母父", "血統"),
-            "JOCKEY": ("同騎手", "継続騎乗"),
-            "COURSE": ("同競馬場", "コース枠", "内枠"),
-            "DISTANCE": ("同距離", "距離替わり"),
-            "SURFACE": ("同馬場", "馬場替わり"),
-            "ROTATION": ("間隔", "ローテ", "使い詰め"),
-            "PACE": ("先行", "差し", "道中押し上げ"),
-            "MARKET": ("単勝オッズ", "市場", "人気"),
-            "PHYSICAL": ("斤量", "馬体重", "年齢"),
-        }
-        for group, prefixes in groups.items():
-            if any(prefix in factor for prefix in prefixes):
-                return group
-        return "ABILITY"
+    def _factor_group(self, factor: str) -> str | None:
+        impact = _factor_impact(factor)
+        return impact.group if impact else None
 
     def _rank_map(self, scores: list[float]) -> list[int]:
         order = sorted(range(len(scores)), key=lambda index: (-scores[index], index))

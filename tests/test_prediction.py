@@ -14,7 +14,9 @@ from services.data_provider.mock import MockProvider
 from services.learning.review import PredictionReviewer
 from services.ml.artifacts import save_logistic_artifact
 from services.ml.baseline import LogisticBaselineTrainer, TrainingConfig
-from services.prediction.rule_based import RuleBasedPredictor
+from services.prediction.config import StabilityConfig
+from services.prediction.rule_based import RuleBasedPredictor, _factor_impact, _soft_saturate
+from services.prediction.stability_evaluation import evaluate_score_stability
 
 
 def test_prediction_probabilities_are_bounded_and_normalized(tmp_path):
@@ -50,6 +52,73 @@ def test_prediction_probabilities_are_bounded_and_normalized(tmp_path):
         assert diagnostics["raw_probability_stddev"] == pytest.approx(raw_stddev, abs=1e-6)
         assert diagnostics["calibrated_probability_stddev"] == pytest.approx(calibrated_stddev, abs=1e-6)
         assert diagnostics["calibrated_probability_stddev"] <= diagnostics["raw_probability_stddev"] + 1e-6
+
+
+def test_soft_saturation_is_smooth_bounded_and_symmetric():
+    values = [_soft_saturate(raw, 0.3) for raw in (0.35, 0.60, 0.90)]
+    assert values[0] == pytest.approx(0.3 * __import__("math").tanh(0.35 / 0.3))
+    assert values[0] < values[1] < values[2] < 0.3
+    assert _soft_saturate(-0.6, 0.3) == pytest.approx(-_soft_saturate(0.6, 0.3))
+    assert _soft_saturate(0.01, 0.3) == pytest.approx(0.01, rel=0.002)
+
+
+def test_factor_impact_uses_explicit_groups_and_flags_unknown_factors():
+    assert _factor_impact("長期休養明け -0.08").group == "ROTATION"
+    assert _factor_impact("市場支持シェア上位 +0.08").group == "MARKET"
+    assert _factor_impact("距離替わり200m -0.06").group == "DISTANCE"
+    assert _factor_impact("未知の補正 +0.03") is None
+
+
+def test_score_prediction_records_both_saturation_diagnostics():
+    predictor = RuleBasedPredictor()
+    features = [_feature(1, 0.7), _feature(2, 0.4)]
+    predictions = predictor.predict(features)
+    prediction = next(item for item in predictions if item.horse_number == 1)
+    assert prediction.score_stability_mode == "hard_cap"
+    assert prediction.hard_cap_final_score is not None
+    assert prediction.soft_saturation_final_score is not None
+    assert prediction.raw_group_adjustments["FORM"] == pytest.approx(0.32)
+    assert prediction.hard_cap_final_score != prediction.soft_saturation_final_score
+    assert sum(item.soft_saturation_raw_probability for item in predictions) == pytest.approx(1.0)
+    assert sum(item.soft_saturation_calibrated_probability for item in predictions) == pytest.approx(1.0)
+
+    challenger = RuleBasedPredictor(stability_config=StabilityConfig(
+        use_soft_saturation=True, use_composite_form_market=True,
+    )).predict(features)
+    challenger_by_horse = {item.horse_id: item for item in challenger}
+    for item in predictions:
+        candidate = challenger_by_horse[item.horse_id]
+        assert item.soft_saturation_raw_probability == pytest.approx(candidate.raw_probability)
+        assert item.soft_saturation_calibrated_probability == pytest.approx(candidate.calibrated_probability)
+
+
+def test_walk_forward_score_comparison_does_not_promote_with_too_few_races():
+    rows = []
+    for race_number in range(4):
+        for horse_number, probability, won in ((1, 0.7, 1), (2, 0.3, 0)):
+            rows.append({
+                "race_id": f"race-{race_number}",
+                "race_date": f"2026-01-0{race_number + 1}",
+                "horse_id": f"horse-{horse_number}",
+                "horse_number": horse_number,
+                "horse_name": f"Horse {horse_number}",
+                "prediction_timestamp": "2026-01-01T00:00:00+00:00",
+                "features": {
+                    "scratched": False,
+                    "horse_number": horse_number,
+                    "frame_number": horse_number,
+                    "distance": 2000,
+                    "popularity": horse_number,
+                },
+                "finish_position": 1 if won else 2,
+                "actual_win": float(won),
+                "actual_top3": True,
+            })
+    result = evaluate_score_stability(rows, fold_count=3)
+    assert result["validation_scheme"] == "chronological_walk_forward_folds"
+    assert [fold["from"] for fold in result["folds"]] == ["2026-01-01", "2026-01-03", "2026-01-04"]
+    assert result["status"] == "insufficient_data"
+    assert result["promotion_approved"] is False
 
 
 def test_analysis_rejects_post_start_prediction_when_enforced(tmp_path):

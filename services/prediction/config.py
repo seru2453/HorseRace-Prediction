@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class StabilityConfig:
+    # Challenger only until historical walk-forward evaluation approves promotion.
+    use_soft_saturation: bool = False
+    use_composite_form_market: bool = False
     condition_adjustment_cap: float = 0.30
     feature_group_caps: dict[str, float] = field(
         default_factory=lambda: {
