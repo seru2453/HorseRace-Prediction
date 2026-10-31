@@ -58,8 +58,20 @@ class RaceRepository:
         race.payload = analysis.race.model_dump(mode="json")
         self.session.add(race)
 
+        horse_ids = {entry.horse.horse_id for entry in analysis.entries}
+        horses_by_id = {
+            horse.horse_id: horse
+            for horse in self.session.scalars(select(Horse).where(Horse.horse_id.in_(horse_ids))).all()
+        } if horse_ids else {}
+        entries_by_number = {
+            entry.horse_number: entry
+            for entry in self.session.scalars(
+                select(RaceEntry).where(RaceEntry.race_id == analysis.race.race_id)
+            ).all()
+        }
+
         for entry in analysis.entries:
-            horse = self.session.get(Horse, entry.horse.horse_id) or Horse(
+            horse = horses_by_id.get(entry.horse.horse_id) or Horse(
                 horse_id=entry.horse.horse_id,
                 horse_name=str(entry.horse.horse_name.value),
                 payload=entry.horse.model_dump(mode="json"),
@@ -67,11 +79,11 @@ class RaceRepository:
             horse.horse_name = str(entry.horse.horse_name.value)
             horse.payload = entry.horse.model_dump(mode="json")
             self.session.add(horse)
-            existing = self.session.scalar(
-                select(RaceEntry).where(RaceEntry.race_id == entry.race_id, RaceEntry.horse_number == int(entry.horse_number.value))
-            )
+            horse_number = int(entry.horse_number.value)
+            existing = entries_by_number.get(horse_number)
             if existing is None:
-                existing = RaceEntry(race_id=entry.race_id, horse_id=entry.horse.horse_id, horse_number=int(entry.horse_number.value))
+                existing = RaceEntry(race_id=entry.race_id, horse_id=entry.horse.horse_id, horse_number=horse_number)
+                entries_by_number[horse_number] = existing
             existing.frame_number = entry.frame_number.value
             existing.scratched = bool(entry.scratched.value)
             existing.payload = entry.model_dump(mode="json")
@@ -1641,30 +1653,42 @@ class RaceRepository:
         self.session.commit()
 
     def save_past_performances(self, observed_in_race_id: str, histories: dict[str, list[dict]]) -> None:
-        for horse_id, rows in histories.items():
-            for row in rows:
-                race_date = row.get("race_date")
-                if not race_date:
-                    continue
-                existing = self.session.scalar(
-                    select(PastPerformance).where(
-                        PastPerformance.horse_id == horse_id,
-                        PastPerformance.race_date == race_date,
-                        PastPerformance.racecourse == row.get("racecourse"),
-                        PastPerformance.race_name == row.get("race_name"),
-                    )
+        pending = [
+            (horse_id, row)
+            for horse_id, rows in histories.items()
+            for row in rows
+            if row.get("race_date")
+        ]
+        horse_ids = {horse_id for horse_id, _ in pending}
+        race_dates = {row["race_date"] for _, row in pending}
+        existing_by_key = {}
+        if horse_ids and race_dates:
+            existing_rows = self.session.scalars(
+                select(PastPerformance).where(
+                    PastPerformance.horse_id.in_(horse_ids),
+                    PastPerformance.race_date.in_(race_dates),
                 )
-                if existing is None:
-                    existing = PastPerformance(
-                        horse_id=horse_id,
-                        observed_in_race_id=observed_in_race_id,
-                        race_date=race_date,
-                        racecourse=row.get("racecourse"),
-                        race_name=row.get("race_name"),
-                    )
-                existing.finish_position = row.get("finish_position")
-                existing.payload = row
-                self.session.add(existing)
+            ).all()
+            existing_by_key = {
+                (item.horse_id, item.race_date, item.racecourse, item.race_name): item
+                for item in existing_rows
+            }
+        for horse_id, row in pending:
+            race_date = row["race_date"]
+            key = (horse_id, race_date, row.get("racecourse"), row.get("race_name"))
+            existing = existing_by_key.get(key)
+            if existing is None:
+                existing = PastPerformance(
+                    horse_id=horse_id,
+                    observed_in_race_id=observed_in_race_id,
+                    race_date=race_date,
+                    racecourse=row.get("racecourse"),
+                    race_name=row.get("race_name"),
+                )
+                existing_by_key[key] = existing
+            existing.finish_position = row.get("finish_position")
+            existing.payload = row
+            self.session.add(existing)
         self.session.commit()
 
     def get_horse_history(self, horse_id: str, limit: int = 5, before_date: str | None = None) -> list[dict]:

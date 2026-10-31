@@ -14,6 +14,7 @@ from database.models import (
     PredictionReview,
     PredictionSnapshot,
     Race,
+    RaceEntry,
     RaceResultEntry,
     TrainingRun,
 )
@@ -98,6 +99,64 @@ def test_batched_horse_histories_limit_rows_and_exclude_future(tmp_path):
     assert len(result["batch-a"]) == len(result["batch-b"]) == 20
     assert result["batch-a"][0]["race_date"] == "2026-08-22"
     assert all(row["race_date"] < "2026-08-23" for rows in result.values() for row in rows)
+
+
+def test_save_analysis_select_count_does_not_scale_with_entries(tmp_path):
+    database_url = f"sqlite:///{tmp_path}/save-analysis-batch.sqlite3"
+    factory = make_session_factory(database_url)
+    analysis = RaceAnalysisService(provider=MockProvider(), database_url=database_url).analyze(
+        AnalysisRequest("2026-08-16", "札幌", 11, iterations=1000, save=False)
+    )
+    statements = []
+    engine = factory.kw["bind"]
+    listener = lambda *args: statements.append(args[2])
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        with factory() as session:
+            RaceRepository(session).save_analysis(analysis)
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(analysis.entries) > 5
+    assert len(selects) == 3  # race, horses, and entries are fetched in batches
+    with factory() as session:
+        assert session.query(Horse).count() == len(analysis.entries)
+        assert session.query(RaceEntry).count() == len(analysis.entries)
+
+
+def test_save_past_performances_batches_existing_rows_and_updates_without_duplicates(tmp_path):
+    database_url = f"sqlite:///{tmp_path}/save-past-batch.sqlite3"
+    factory = make_session_factory(database_url)
+    histories = {
+        horse_id: [
+            {"race_date": f"2026-07-{day:02d}", "racecourse": "札幌", "race_name": f"race-{day}", "finish_position": day}
+            for day in range(1, 9)
+        ]
+        for horse_id in ("horse-a", "horse-b")
+    }
+    with factory() as session:
+        RaceRepository(session).save_past_performances("observed", histories)
+
+    histories["horse-a"][0]["finish_position"] = 9
+    statements = []
+    engine = factory.kw["bind"]
+    listener = lambda *args: statements.append(args[2])
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        with factory() as session:
+            RaceRepository(session).save_past_performances("new-observation", histories)
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 1
+    with factory() as session:
+        rows = session.scalars(select(PastPerformance)).all()
+    assert len(rows) == 16
+    updated = next(row for row in rows if row.horse_id == "horse-a" and row.race_date == "2026-07-01")
+    assert updated.finish_position == 9
+    assert updated.payload["finish_position"] == 9
 
 
 def test_analysis_reuses_db_history_when_provider_has_no_history(tmp_path):
