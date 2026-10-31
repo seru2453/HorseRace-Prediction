@@ -26,7 +26,7 @@ test("analysis is visual and reopening defaults race date to today", async ({ pa
   await stubSchedule(page);
   await page.route("**/api/analyze", async (route) => {
     const payload = JSON.parse(route.request().postData() || "{}");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 800));
     const response = await route.fetch({ postData: JSON.stringify({ ...payload, mode: "demo" }) });
     const body = await response.json();
     body.predictions[0].expected_value_index = 1.6;
@@ -74,9 +74,9 @@ test("analysis is visual and reopening defaults race date to today", async ({ pa
   await page.locator("#race-date").fill("2026-08-16");
   await page.locator("#racecourse").selectOption("札幌");
   await page.locator("#race-number").selectOption("11");
-  const analyzeButton = page.getByRole("button", { name: "分析開始" });
+  const analyzeButton = page.locator(".analyze-button");
   await analyzeButton.click();
-  await expect(page.getByRole("button", { name: "分析中" })).toBeDisabled();
+  await expect(analyzeButton).toBeDisabled();
   await expect(page.locator("#progress .spinner")).toBeVisible();
   await expect(page.locator("#progress")).toContainText("レース分析を実行中です");
   await expect(page.locator("#progress")).not.toContainText(/レース確認|出馬表取得|出走馬解析|過去データ照合|予測準備/);

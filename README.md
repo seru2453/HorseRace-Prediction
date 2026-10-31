@@ -21,11 +21,11 @@ Open `http://localhost:8000`.
 
 `DEPLOYMENT_MODE=local` (default) keeps the local export/import and live provider features available. Set `DEPLOYMENT_MODE=public` to hide local administration controls and restrict public requests to saved analysis/results; public requests do not trigger upstream JRA fetches. Public mode is a deployment boundary, not an authentication system.
 
-## 毎週土曜の自動起動・停止（macOS）
+## 毎週土日の自動起動・停止（macOS）
 
-macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開き、16:30にこのリポジトリのアプリサーバーを停止します。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
+macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜・日曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開き、16:30に最終pipelineを最大15分実行してからこのリポジトリのアプリサーバーを停止します。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
 
-起動・停止用のLaunchAgentを2つ登録します。アプリが既に動いている場合は二重起動せず、ポート8000を使うプロセスの作業ディレクトリとコマンドを照合してからPIDを記録します。停止時も記録したPIDがこのリポジトリのFlaskプロセスであることを確認してからSIGTERMを送り、最大30秒待ちます。停止しない場合も強制終了はしません。他のPythonプロセスやブラウザは終了しません。
+土曜日・日曜日それぞれ9:40に起動、16:30に最終pipelineを実行して停止する2つのLaunchAgentを登録します。アプリが既に動いている場合は二重起動せず、ポート8000を使うプロセスの作業ディレクトリとコマンドを照合してからPIDを記録します。停止時も記録したPIDがこのリポジトリのFlaskプロセスであることを確認してからSIGTERMを送り、最大30秒待ちます。停止しない場合も強制終了はしません。他のPythonプロセスやブラウザは終了しません。
 
 ```bash
 scripts/install_macos_autostart.sh
@@ -91,8 +91,9 @@ JRA公式の公開結果ページも、結果選択ページからPOST遷移で�
 - SQLite: `data/db/keiba.sqlite3`
 - JRA fetch cache: `data/cache/jra_official`
 - JRA fetch cache is refreshed after five minutes so the current race card is not masked by an older meeting page.
-- While `make dev` is running, today's schedule, predictions due within two hours, and saved races awaiting results are checked every hour. The first check starts after 30 seconds.
+- While `make dev` is running, today's schedule, predictions due within two hours, and saved races awaiting results are checked every 30 minutes. The first check starts after 30 seconds. Each run logs schedule, predicted, already predicted, prediction pending, reviewed, result pending, and error counts.
 - `make pipeline` runs the same automation once. `make worker` runs it continuously without the UI.
+- Run `scripts/install_macos_autostart.sh` again after updating the repository to register the Saturday/Sunday schedule and final pipeline shutdown.
 
 ## テスト
 
