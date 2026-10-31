@@ -851,6 +851,9 @@ class RaceRepository:
                         "relative_finish": relative_value,
                         "actual_win": float(actual_win),
                         "actual_top3": bool(finish_position is not None and int(finish_position) <= 3),
+                        "actual_top5": (
+                            bool(int(finish_position) <= 5) if finish_position is not None else None
+                        ),
                         "result_status": review_row.get("result_status"),
                         "features": features,
                     }
@@ -859,7 +862,7 @@ class RaceRepository:
             "row_count": len(rows),
             "race_count": len({row["race_id"] for row in rows}),
             "feature_columns": sorted(feature_columns),
-            "label_columns": ["actual_win", "actual_top3", "finish_position", "relative_finish"],
+            "label_columns": ["actual_win", "actual_top3", "actual_top5", "finish_position", "relative_finish"],
             "excluded_counts": excluded_counts,
             "rows": rows,
             "note": "1行=1レース1頭です。最新reviewとprediction_snapshots.raw_featuresを結合しています。",
@@ -1810,11 +1813,24 @@ class RaceRepository:
         metrics = [payload.get("ranking_metrics") or {} for payload in payloads]
         winner_ranks = [item.get("winner_predicted_rank") for item in metrics if item.get("winner_predicted_rank") is not None]
         capture_rates = [item.get("top3_capture_rate") for item in metrics if item.get("top3_capture_rate") is not None]
+        top5_metrics = [item for item in metrics if item.get("top5_capture_count") is not None]
+        top5_counts = [item["top5_capture_count"] for item in top5_metrics]
+        top5_rates = [item["top5_capture_rate"] for item in top5_metrics if item.get("top5_capture_rate") is not None]
+        winner_top5 = [item["winner_in_top5"] for item in top5_metrics if item.get("winner_in_top5") is not None]
+        four_of_five = [item["top5_capture_4of5"] for item in top5_metrics if item.get("top5_capture_4of5") is not None]
+        five_of_five = [item["top5_capture_5of5"] for item in top5_metrics if item.get("top5_capture_5of5") is not None]
         rank_errors = [item.get("mean_rank_error") for item in metrics if item.get("mean_rank_error") is not None]
         return {
             "race_count": len(metrics),
             "average_winner_predicted_rank": round(mean(winner_ranks), 6) if winner_ranks else None,
             "average_top3_capture_rate": round(mean(capture_rates), 6) if capture_rates else None,
+            "top5_race_count": len(top5_metrics),
+            "winner_in_top5_rate": round(mean(winner_top5), 6) if winner_top5 else None,
+            "average_top5_capture_count": round(mean(top5_counts), 6) if top5_counts else None,
+            "average_top5_capture_rate": round(mean(top5_rates), 6) if top5_rates else None,
+            "top5_capture_4of5_rate": round(mean(four_of_five), 6) if four_of_five else None,
+            "top5_capture_5of5_rate": round(mean(five_of_five), 6) if five_of_five else None,
+            "top5_sample_status": "sample_small" if len(top5_metrics) < 100 else "ok",
             "average_rank_error": round(mean(rank_errors), 6) if rank_errors else None,
         }
 

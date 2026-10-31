@@ -278,6 +278,34 @@ def test_review_biggest_ai_misses_prioritize_full_finish_rank_error():
     assert row["rank_error_direction"] == "overvalued"
 
 
+def test_review_top5_metrics_include_ties_and_keep_incomplete_results_unknown():
+    predictions = [
+        _prediction(number, 1 / 8).model_copy(update={"final_rank": number})
+        for number in range(1, 9)
+    ]
+    result = RaceResultData(
+        race_id="target",
+        result_timestamp="2026-08-30T00:00:00+00:00",
+        entries=[
+            RaceResultEntryData(horse_number=number, horse_name=f"Horse {number}", finish_position=position)
+            for number, position in {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 5, 7: 7}.items()
+        ],
+    )
+
+    metrics = PredictionReviewer().review(predictions, result)["ranking_metrics"]
+
+    assert metrics["winner_in_top5"] is True
+    assert metrics["top3_in_predicted_top5"] == 3
+    assert metrics["top5_capture_count"] == 5  # both fifth-place horses are actual Top5
+    assert metrics["top5_capture_rate"] == 1.0
+    assert metrics["top5_capture_4of5"] is True
+    assert metrics["top5_capture_5of5"] is True
+
+    incomplete = PredictionReviewer().review(predictions[:4], result)["ranking_metrics"]
+    assert incomplete["top5_capture_count"] is None
+    assert incomplete["winner_in_top5"] is None
+
+
 def _training_rows_for_blend(target_rows: bool, race_id: str | None = None) -> list[dict]:
     rows = []
     for index in range(32):

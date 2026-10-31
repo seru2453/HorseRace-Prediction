@@ -139,10 +139,26 @@ class PredictionReviewer:
         winner = next((row for row in finished if int(row["finish_position"]) == 1), None)
         predicted_top3 = {row["horse_number"] for row in rows if row.get("final_rank") and int(row["final_rank"]) <= 3}
         actual_top3 = {row["horse_number"] for row in finished if int(row["finish_position"]) <= 3}
+        ranked_rows = [row for row in rows if row.get("final_rank") is not None]
+        predicted_top5 = {
+            row["horse_number"] for row in ranked_rows if int(row["final_rank"]) <= 5
+        }
+        actual_top5 = {
+            row["horse_number"] for row in finished if int(row["finish_position"]) <= 5
+        }
+        top5_complete = len(ranked_rows) >= 5 and len(finished) >= 5
+        top5_capture_count = len(predicted_top5 & actual_top5) if top5_complete else None
+        winner_numbers = {row["horse_number"] for row in finished if int(row["finish_position"]) == 1}
         return {
             "winner_predicted_rank": winner.get("final_rank") if winner else None,
             "top3_capture_count": len(predicted_top3 & actual_top3),
             "top3_capture_rate": round(len(predicted_top3 & actual_top3) / len(actual_top3), 6) if actual_top3 else None,
+            "winner_in_top5": bool(winner_numbers & predicted_top5) if winner_numbers and len(ranked_rows) >= 5 else None,
+            "top3_in_predicted_top5": len(actual_top3 & predicted_top5) if top5_complete else None,
+            "top5_capture_count": top5_capture_count,
+            "top5_capture_rate": round(min(top5_capture_count, 5) / 5, 6) if top5_capture_count is not None else None,
+            "top5_capture_4of5": top5_capture_count >= 4 if top5_capture_count is not None else None,
+            "top5_capture_5of5": top5_capture_count >= 5 if top5_capture_count is not None else None,
             "mean_rank_error": round(
                 mean(abs(int(row["final_rank"]) - int(row["finish_position"])) for row in finished), 6
             ) if finished else None,

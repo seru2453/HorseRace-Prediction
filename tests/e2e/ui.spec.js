@@ -181,6 +181,15 @@ test("started race opens the results view without creating a prediction", async 
   await expect(page.locator('.result-entry[data-horse-number="1"] [data-result-position]')).toHaveText("1着");
 });
 
+test("learning history shows the Top5 evaluation summary", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "履歴" }).click();
+  const learning = page.locator("#learning");
+  await expect(learning).toContainText("AI Top5評価");
+  await expect(learning).toContainText("評価レース");
+  await expect(learning).toContainText("標本少（100レース未満）");
+});
+
 test("opening with a previous-day selection defaults to today and today's racecourses", async ({ page }) => {
   await stubSchedule(page);
   await page.addInitScript(() => {
