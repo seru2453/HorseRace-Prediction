@@ -44,5 +44,7 @@ def test_final_pipeline_timeout_does_not_skip_safe_shutdown(tmp_path, monkeypatc
     assert finalize_keiba.finalize(tmp_path, runner=runner) == 124
     assert calls[0][0][-1] == str(tmp_path / "apps/cli/daily_pipeline.py")
     assert calls[0][1]["timeout"] == 900
-    assert calls[1][0] == [str(tmp_path / "scripts/close_keiba.sh")]
+    assert calls[1][0][-1] == str(tmp_path / "scripts/backup_database.py")
+    assert calls[1][1]["timeout"] == 120
+    assert calls[2][0] == [str(tmp_path / "scripts/close_keiba.sh")]
     assert "continuing shutdown" in (tmp_path / "finalize.log").read_text()

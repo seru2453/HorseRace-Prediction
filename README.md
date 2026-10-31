@@ -23,7 +23,7 @@ Open `http://localhost:8000`.
 
 ## 毎週土日の自動起動・停止（macOS）
 
-macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜・日曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開き、16:30に最終pipelineを最大15分実行してからこのリポジトリのアプリサーバーを停止します。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
+macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜・日曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開き、16:30に最終pipelineを最大15分実行し、JSON backupを保存してからこのリポジトリのアプリサーバーを停止します。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
 
 土曜日・日曜日それぞれ9:40に起動、16:30に最終pipelineを実行して停止する2つのLaunchAgentを登録します。アプリが既に動いている場合は二重起動せず、ポート8000を使うプロセスの作業ディレクトリとコマンドを照合してからPIDを記録します。停止時も記録したPIDがこのリポジトリのFlaskプロセスであることを確認してからSIGTERMを送り、最大30秒待ちます。停止しない場合も強制終了はしません。他のPythonプロセスやブラウザは終了しません。
 
@@ -89,10 +89,12 @@ JRA公式の公開結果ページも、結果選択ページからPOST遷移で�
 ## データ保存場所
 
 - SQLite: `data/db/keiba.sqlite3`
+- Automatic JSON backups: `data/backups/horseprediction-YYYY-MM-DD.json` (latest 20 files)
 - JRA fetch cache: `data/cache/jra_official`
 - JRA fetch cache is refreshed after five minutes so the current race card is not masked by an older meeting page.
 - While `make dev` is running, today's schedule, predictions due within two hours, and saved races awaiting results are checked every 30 minutes. The first check starts after 30 seconds. Each run logs schedule, predicted, already predicted, prediction pending, reviewed, result pending, and error counts.
 - `make pipeline` runs the same automation once. `make worker` runs it continuously without the UI.
+- `scripts/backup_database.py` writes the existing export format through an atomic temporary file, verifies it, and keeps at most 20 dated backups. Backups are local and ignored by Git; restore them with the app's `データ読込` action.
 - Run `scripts/install_macos_autostart.sh` again after updating the repository to register the Saturday/Sunday schedule and final pipeline shutdown.
 
 ## テスト
