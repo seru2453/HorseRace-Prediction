@@ -21,7 +21,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
-local = ["flask>=3.0", "pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+local = ["flask>=3.0", "httpx2>=2.0", "pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
 e2e = ["playwright>=1.45"]
 
 [tool.setuptools.packages.find]
