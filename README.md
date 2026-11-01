@@ -23,15 +23,15 @@ Open `http://localhost:8000`.
 
 ## 毎週土日の自動起動・停止（macOS）
 
-macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜・日曜9:40にアプリを起動してデフォルトブラウザで `http://localhost:8000` を開き、16:30に最終pipelineを最大15分実行し、JSON backupを保存してからこのリポジトリのアプリサーバーを停止します。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
+macOSでログイン中のユーザー向けにLaunchAgentを登録すると、毎週土曜・日曜9:40にアプリを起動します。週末に予測時間帯の途中でログインした場合も、9:40〜16:30なら起動を補います。16:30に最終pipelineとSQLite backupを実行してアプリを停止し、17:00と17:30に保存済み予想の結果照合だけを再試行します。17:35にbackupを更新し、日曜18:00に結果待ちがない場合だけwalk-forward評価付きのLogistic Challengerを学習します。Challengerは保存されますが、Championへ自動昇格しません。Macの電源が切れている場合やログインしていない場合、スケジュールどおりには実行されません。
 
-土曜日・日曜日それぞれ9:40に起動、16:30に最終pipelineを実行して停止する2つのLaunchAgentを登録します。アプリが既に動いている場合は二重起動せず、ポート8000を使うプロセスの作業ディレクトリとコマンドを照合してからPIDを記録します。停止時も記録したPIDがこのリポジトリのFlaskプロセスであることを確認してからSIGTERMを送り、最大30秒待ちます。停止しない場合も強制終了はしません。他のPythonプロセスやブラウザは終了しません。
+土日起動・停止、ログイン時catch-up、17時台の結果回収とbackup、日曜週次学習のLaunchAgentを登録します。アプリが既に動いている場合は二重起動せず、ポート8000を使うプロセスの作業ディレクトリとコマンドを照合してからPIDを記録します。停止時も記録したPIDがこのリポジトリのFlaskプロセスであることを確認してからSIGTERMを送り、最大30秒待ちます。停止しない場合も強制終了はしません。他のPythonプロセスやブラウザは終了しません。
 
 ```bash
 scripts/install_macos_autostart.sh
 ```
 
-登録内容は `~/Library/LaunchAgents/com.horserace.saturday.plist` と `~/Library/LaunchAgents/com.horserace.saturday-stop.plist` に生成されます。スクリプトはリポジトリ位置からアプリを起動するため、ユーザー固有のパスをリポジトリへ書き込む必要はありません。手動で動作を確認する場合は次を実行します。
+登録内容は `~/Library/LaunchAgents/com.horserace.*.plist` に生成されます。スクリプトはリポジトリ位置からアプリを起動するため、ユーザー固有のパスをリポジトリへ書き込む必要はありません。手動で動作を確認する場合は次を実行します。
 
 ```bash
 scripts/open_keiba.sh
@@ -92,11 +92,11 @@ JRA公式の公開結果ページも、結果選択ページからPOST遷移で�
 - Automatic SQLite backups: `data/backups/horseprediction-YYYY-MM-DD.sqlite3` (latest 20 files)
 - JRA fetch cache: `data/cache/jra_official`
 - JRA fetch cache is refreshed after five minutes so the current race card is not masked by an older meeting page.
-- While `make dev` is running, today's schedule, predictions due within two hours, and saved races awaiting results are checked every 30 minutes. The first check starts after 30 seconds. Each run logs schedule, predicted, already predicted, prediction pending, reviewed, result pending, and error counts.
+- While `make dev` is running, today's schedule, predictions due within two hours, and saved races awaiting results are checked every 30 minutes. The first check starts after 30 seconds. Each run logs expected flat races, predicted, already predicted, missed prediction windows, results/reviews saved, result pending, and error counts. Scheduled late collectors only read races with saved AI prediction snapshots and never create predictions.
 - `make pipeline` runs the same automation once. `make worker` runs it continuously without the UI.
 - `scripts/backup_database.py` uses SQLite's online Backup API, checks the copied database, writes atomically, and keeps at most 20 dated backups. Backups are local and ignored by Git. To restore a SQLite backup, stop the app and copy the selected backup over `data/db/keiba.sqlite3`; JSON exports remain available through `データ読込`.
 - Local `/api/export` and `/api/training-dataset` responses stream JSON. Database exports fetch records in bounded batches, and training rows are staged through a size-limited temporary file so Flask does not build a second full response list.
-- Run `scripts/install_macos_autostart.sh` again after updating the repository to register the Saturday/Sunday schedule and final pipeline shutdown.
+- Run `scripts/install_macos_autostart.sh` again after updating the repository to register the weekend schedule, result retries, backup, and weekly Challenger job.
 
 ## テスト
 

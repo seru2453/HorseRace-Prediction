@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import json
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, event, func, select
@@ -16,12 +17,14 @@ from database.models import (
     PredictionSnapshot,
     Race,
     RaceEntry,
+    RaceResult,
     RaceResultEntry,
     TrainingRun,
 )
 from database.repository import RaceRepository
 from database.session import make_session_factory
 from services.app.orchestrator import AnalysisRequest, RaceAnalysisService
+from services.common.models import RaceData, field
 from services.data_provider.mock import MockProvider
 from services.features.generator import FeatureGenerator
 from services.learning.review import PredictionReviewer
@@ -62,6 +65,68 @@ def test_repository_saves_and_reuses_past_performances(tmp_path):
     assert history[0]["race_date"] == "2026-07-12"
     assert history[0]["finish_position"] == 3
     assert history[0]["distance"] == 2000
+
+
+def test_race_history_stats_use_only_prior_ten_years_and_matching_course(tmp_path):
+    database_url = f"sqlite:///{tmp_path}/race-history.sqlite3"
+    history_rows = [
+        ("past-series", "2017-10-29", "天皇賞(秋)", "東京", 1),
+        ("past-course", "2018-10-29", "別定戦", "東京", 8),
+        ("too-old", "2015-10-29", "天皇賞（秋）", "東京", 8),
+        ("future", "2026-11-02", "天皇賞（秋）", "東京", 8),
+        ("same-day", "2026-11-01", "天皇賞（秋）", "東京", 8),
+        ("other-course", "2017-10-29", "天皇賞（秋）", "京都", 8),
+    ]
+    with make_session_factory(database_url)() as session:
+        for race_id, race_date, race_name, course, finish in history_rows:
+            session.add(Race(
+                race_id=race_id,
+                race_date=race_date,
+                racecourse=course,
+                race_number=1,
+                payload={
+                    "race_name": {"value": race_name},
+                    "surface": {"value": "芝"},
+                    "distance": {"value": 2000},
+                    "grade": {"value": "G1" if "天皇賞" in race_name else "G2"},
+                },
+            ))
+            horse_id = f"horse-{race_id}"
+            session.add(Horse(horse_id=horse_id, horse_name=horse_id, payload={}))
+            session.add(RaceEntry(
+                race_id=race_id,
+                horse_id=horse_id,
+                horse_number=1,
+                frame_number=1,
+                payload={"age": {"value": 4}},
+            ))
+            session.add(RaceResult(
+                race_id=race_id,
+                result_timestamp=f"{race_date}T18:00:00+09:00",
+                payload={"entries": [{"horse_number": 1, "finish_position": finish, "popularity": 1}]},
+            ))
+        session.commit()
+        target = RaceData(
+            race_id="target",
+            race_date=field("2026-11-01"),
+            racecourse=field("東京"),
+            race_number=field(12),
+            race_name=field("天皇賞（秋）"),
+            grade=field("G1"),
+            surface=field("芝"),
+            distance=field(2000),
+        )
+        entry = SimpleNamespace(
+            horse=SimpleNamespace(horse_id="today"),
+            frame_number=field(1),
+            age=field(4),
+            popularity=field(1),
+        )
+        result = RaceRepository(session).race_history_stats(target, [entry])
+
+    assert result["today"]["race_history_frame_sample_count"] == 1
+    assert result["today"]["race_history_frame_course_sample_count"] == 2
+    assert result["today"]["race_history_frame_top3_rate"] == pytest.approx(0.5238095)
 
 
 def test_batched_horse_histories_limit_rows_and_exclude_future(tmp_path):

@@ -35,7 +35,11 @@ def test_automatic_review_retries_a_prior_race_with_review_but_no_saved_result(t
     outcomes = AutomaticReviewService(provider, database_url).run_once()
 
     assert outcomes[0]["race_id"] == analysis.race.race_id
-    assert outcomes[0]["status"] == "reviewed"
+    assert outcomes[0]["status"] == "result_saved"
+    assert outcomes[0]["result_saved"] is True
+    assert outcomes[0]["review_saved"] is False
     with make_session_factory(database_url)() as session:
         result, _ = RaceRepository(session).saved_result(analysis.race.race_id)
+        history = RaceRepository(session).race_history(has_review=True)
     assert result is not None
+    assert history[0]["review_count"] == 1

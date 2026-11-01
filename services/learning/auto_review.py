@@ -45,6 +45,8 @@ class AutomaticReviewService:
                 outcomes.append({"race_id": race_id, "status": "skipped", "message": "保存済みAI予測なし"})
                 continue
 
+            result_was_saved = race_result is not None
+            review_already_saved = bool(row.get("review_count"))
             result_source = f"saved_{saved_source}" if race_result else "provider"
             if race_result is None:
                 try:
@@ -56,10 +58,12 @@ class AutomaticReviewService:
                 outcomes.append({"race_id": race_id, "status": "pending", "message": "結果未取得"})
                 continue
 
-            review = PredictionReviewer().review(predictions, race_result, user_predictions)
-            review["prediction_source"] = "saved_snapshot"
-            review["user_prediction_source"] = "saved" if user_predictions else "none"
-            review["result_source"] = result_source
+            review = None
+            if not review_already_saved:
+                review = PredictionReviewer().review(predictions, race_result, user_predictions)
+                review["prediction_source"] = "saved_snapshot"
+                review["user_prediction_source"] = "saved" if user_predictions else "none"
+                review["result_source"] = result_source
             actual_top3_numbers = {
                 item.horse_number
                 for item in race_result.entries
@@ -68,13 +72,18 @@ class AutomaticReviewService:
             if save:
                 with self.session_factory() as session:
                     repo = RaceRepository(session)
-                    repo.save_result(race_result)
-                    repo.save_review(race_id, review)
+                    if not result_was_saved:
+                        repo.save_result(race_result)
+                    if review is not None:
+                        repo.save_review(race_id, review)
             outcomes.append(
                 {
                     "race_id": race_id,
-                    "status": "reviewed",
-                    "ai_brier_score": review.get("ai_brier_score"),
+                    "status": "result_saved" if review_already_saved else "reviewed",
+                    "result_source": result_source,
+                    "result_saved": bool(save and not result_was_saved),
+                    "review_saved": bool(save and review is not None),
+                    "ai_brier_score": review.get("ai_brier_score") if review else None,
                     "top3_hit_count": len({item.horse_number for item in predictions[:3]} & actual_top3_numbers),
                 }
             )

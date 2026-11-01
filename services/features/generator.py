@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 
 from services.common.models import HorseFeature, RaceData, RaceEntryData
 from services.ml.targets import relative_finish
+from services.features.pedigree import pedigree_metadata
 from services.prediction.config import DEFAULT_STABILITY_CONFIG
 
-FEATURE_VERSION = "mvp-feature-v33"
+FEATURE_VERSION = "mvp-feature-v34"
 
 GRADE_LEVELS = {
     "G1": 4,
@@ -106,11 +107,13 @@ class FeatureGenerator:
         histories: dict[str, list] | None = None,
         aptitude_histories: dict[str, list] | None = None,
         pedigree_stats: dict[str, dict] | None = None,
+        race_history_stats: dict[str, dict] | None = None,
         track_bias: dict | None = None,
     ) -> list[HorseFeature]:
         histories = histories or {}
         aptitude_histories = aptitude_histories or {}
         pedigree_stats = pedigree_stats or {}
+        race_history_stats = race_history_stats or {}
         track_bias = track_bias or {}
         generated: list[HorseFeature] = []
         running_profiles = {
@@ -263,10 +266,28 @@ class FeatureGenerator:
                 previous_residual,
             )
             pedigree = pedigree_stats.get(entry.horse.horse_id) or {}
+            race_history = race_history_stats.get(entry.horse.horse_id) or {}
+            running_profile = running_profiles.get(entry.horse.horse_id) or self._running_profile(history)
+            pedigree_info = pedigree_metadata(entry.horse.model_dump(mode="json"))
+            style_bias_scores = track_bias.get("style_bias_scores") or {}
+            current_style_bias = style_bias_scores.get(running_profile["running_style"])
+            sire_line_lift = pedigree.get("sire_line_course_shrunk_lift")
+            damsire_line_lift = pedigree.get("damsire_line_course_shrunk_lift")
+            pedigree_style_lift = (
+                (float(sire_line_lift) + float(damsire_line_lift)) / 2.0
+                if sire_line_lift is not None and damsire_line_lift is not None
+                else float(sire_line_lift) if sire_line_lift is not None
+                else float(damsire_line_lift) if damsire_line_lift is not None
+                else None
+            )
+            pedigree_bias_match = (
+                pedigree_style_lift * float(current_style_bias)
+                if pedigree_style_lift is not None and current_style_bias is not None
+                else None
+            )
             track_bias_adjustment = self._track_bias_adjustment(
                 track_bias.get("raw_bias"), entry.frame_number.value, int(track_bias.get("race_count") or 0)
             )
-            running_profile = running_profiles.get(entry.horse.horse_id) or self._running_profile(history)
             market_profile = self._market_performance_profile(history)
             if distance_match_top3 is None:
                 unavailable.append("same_distance_top3_rate")
@@ -445,9 +466,24 @@ class FeatureGenerator:
                     DEFAULT_STABILITY_CONFIG.pedigree_shrinkage_strength,
                 ),
                 "damsire_condition_sample_status": self._sample_status(int(pedigree.get("damsire_condition_starts") or 0)),
+                "pedigree_condition_baseline_top3_rate": pedigree.get("pedigree_condition_baseline_top3_rate"),
+                "pedigree_sire_line_shrunk_lift": sire_line_lift,
+                "pedigree_damsire_line_shrunk_lift": damsire_line_lift,
+                "pedigree_style_bias_match": pedigree_bias_match,
+                "pedigree_bias_sample_status": (
+                    "UNKNOWN" if pedigree_style_lift is None or current_style_bias is None
+                    else track_bias.get("style_bias_sample_status") or "UNKNOWN"
+                ),
+                **pedigree_info,
+                **race_history,
                 "track_bias_adjustment": track_bias_adjustment,
                 "track_bias_sample_count": int(track_bias.get("race_count") or 0),
                 "track_bias_sample_status": track_bias.get("sample_status") or "UNKNOWN",
+                "track_bias_front_score": style_bias_scores.get("front"),
+                "track_bias_stalker_score": style_bias_scores.get("stalker"),
+                "track_bias_closer_score": style_bias_scores.get("closer"),
+                "track_bias_style_sample_count": int(track_bias.get("style_bias_sample_count") or 0),
+                "track_bias_style_sample_status": track_bias.get("style_bias_sample_status") or "UNKNOWN",
                 "running_style": running_profile["running_style"],
                 "average_first_corner_ratio": running_profile["average_first_corner_ratio"],
                 "average_position_gain": running_profile["average_position_gain"],

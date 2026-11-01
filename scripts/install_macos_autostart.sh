@@ -8,20 +8,25 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-LABEL="com.horserace.saturday"
-STOP_LABEL="com.horserace.saturday-stop"
 PLIST_DIR="$HOME/Library/LaunchAgents"
-PLIST_PATH="$PLIST_DIR/$LABEL.plist"
-STOP_PLIST_PATH="$PLIST_DIR/$STOP_LABEL.plist"
-
 mkdir -p "$PLIST_DIR"
-python3 "$REPO_DIR/scripts/macos_autostart.py" "$REPO_DIR" "$PLIST_PATH" "$LABEL" start
-python3 "$REPO_DIR/scripts/macos_autostart.py" "$REPO_DIR" "$STOP_PLIST_PATH" "$STOP_LABEL" stop
 
-for plist_path in "$PLIST_PATH" "$STOP_PLIST_PATH"; do
+ACTIONS=(start stop catchup collect collect_late backup train)
+PLIST_PATHS=()
+for action in "${ACTIONS[@]}"; do
+  case "$action" in
+    start) label="com.horserace.saturday" ;;
+    stop) label="com.horserace.saturday-stop" ;;
+    *) label="com.horserace.weekend-$action" ;;
+  esac
+  plist_path="$PLIST_DIR/$label.plist"
+  python3 "$REPO_DIR/scripts/macos_autostart.py" "$REPO_DIR" "$plist_path" "$label" "$action"
+  PLIST_PATHS+=("$plist_path")
+done
+
+for plist_path in "${PLIST_PATHS[@]}"; do
   launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$plist_path"
 done
-echo "Installed Saturday/Sunday startup at 09:40: $PLIST_PATH"
-echo "Installed Saturday/Sunday final pipeline and shutdown at 16:30: $STOP_PLIST_PATH"
+echo "Installed weekend app startup, catch-up, result collection, backup, and Sunday Challenger training LaunchAgents."
 echo "Run scripts/open_keiba.sh to try it now."

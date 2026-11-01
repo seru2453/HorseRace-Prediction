@@ -20,6 +20,9 @@ dataset:
 train:
 	$(PYTHON) apps/cli/predict.py --train-baseline $(ARGS)
 
+train-weekly:
+	$(PYTHON) apps/cli/weekly_training.py
+
 migrate:
 	$(PYTHON) apps/cli/migrate.py
 

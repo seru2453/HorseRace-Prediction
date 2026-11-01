@@ -23,6 +23,9 @@ class HorseData(BaseModel):
     sire: DataField = Field(default_factory=DataField)
     dam: DataField = Field(default_factory=DataField)
     damsire: DataField = Field(default_factory=DataField)
+    sire_sire: DataField = Field(default_factory=DataField)
+    sire_dam: DataField = Field(default_factory=DataField)
+    dam_dam: DataField = Field(default_factory=DataField)
 
 
 class RaceData(BaseModel):
