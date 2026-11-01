@@ -1,6 +1,53 @@
 from pathlib import Path
 
 from services.features.generator import FeatureGenerator
+from services.features.pedigree import lineage_family, pedigree_metadata
+from services.features.race_history import normalize_race_name, race_history_features
+
+
+def test_race_history_features_shrink_sparse_series_to_course_baseline():
+    target = {
+        "race_name": "天皇賞（秋）",
+        "racecourse": "東京",
+        "surface": "芝",
+        "distance": 2000,
+        "grade": "G1",
+    }
+    histories = [
+        {
+            "race_name": "天皇賞(秋)", "racecourse": "東京", "surface": "芝", "distance": 2000, "grade": "G1",
+            "entries": [{"frame_number": 1, "age": 4, "popularity": 1, "finish_position": 6}],
+        },
+        {
+            "race_name": "別定戦", "racecourse": "東京", "surface": "芝", "distance": 2000, "grade": "G2",
+            "entries": [
+                {"frame_number": 1, "age": 4, "popularity": 1, "finish_position": 1},
+                {"frame_number": 1, "age": 4, "popularity": 1, "finish_position": 2},
+                {"frame_number": 1, "age": 4, "popularity": 1, "finish_position": 8},
+            ],
+        },
+        {
+            "race_name": "天皇賞（秋）", "racecourse": "京都", "surface": "芝", "distance": 2000, "grade": "G1",
+            "entries": [{"frame_number": 1, "age": 4, "popularity": 1, "finish_position": 1}],
+        },
+    ]
+    result = race_history_features(target, [{"horse_id": "h1", "frame_number": 1, "age": 4, "popularity": 1}], histories, prior_strength=3)
+
+    assert normalize_race_name("天皇賞（秋）") == normalize_race_name(" 天皇賞(秋) ")
+    row = result["h1"]
+    assert row["race_history_frame_sample_count"] == 1
+    assert row["race_history_frame_course_sample_count"] == 4
+    assert row["race_history_frame_top3_rate"] == 0.375
+    assert row["race_history_frame_sample_status"] == "VERY_LOW"
+
+
+def test_pedigree_lineage_resolution_preserves_unknown_ancestors():
+    assert lineage_family("Deep Impact") == "SUNDAY_SILENCE"
+    assert lineage_family("未登録の種牡馬") is None
+    unknown = pedigree_metadata({})
+    assert unknown["pedigree_depth_available"] == 0
+    assert unknown["pedigree_ancestor_count"] == 0
+    assert unknown["lineage_resolution_status"] == "UNKNOWN"
 from services.common.models import field
 from services.parser.race_parser import RaceParser
 
@@ -49,6 +96,7 @@ def test_jra_histories_feed_feature_generation():
     assert first["distance_change_abs"] == 0
     assert first["surface_change"] == "same"
     assert first["win_odds"] == 12.3
+
     assert first["popularity"] == 4
     assert round(first["implied_win_probability"], 4) == 0.0813
     assert first["field_implied_win_probability_rank_ratio"] == 1.0
@@ -87,6 +135,33 @@ def test_jra_histories_feed_feature_generation():
     assert first["latest_recent_horse_weight"] == 468
     assert first["average_recent_horse_weight"] == 472.0
     assert first["latest_recent_horse_weight_change"] == -8
+
+
+def test_pedigree_and_style_bias_interactions_are_saved_as_shadow_features():
+    parsed = RaceParser().parse_entries_html(Path("fixtures/jra_official_sample.html").read_text(encoding="utf-8"))
+    horse = parsed.entries[0].horse
+    horse.sire = field("Deep Impact", 0.9, "fixture")
+    horse.damsire = field("Mr. Prospector", 0.9, "fixture")
+    stats = {
+        horse.horse_id: {
+            "sire_line_course_shrunk_lift": 0.2,
+            "damsire_line_course_shrunk_lift": 0.1,
+        }
+    }
+    features = FeatureGenerator().generate(
+        parsed.race,
+        parsed.entries,
+        parsed.histories or {},
+        pedigree_stats=stats,
+        track_bias={"style_bias_scores": {"front": 0.2, "stalker": 0.2, "closer": 0.2}, "style_bias_sample_count": 8, "style_bias_sample_status": "SUFFICIENT"},
+    )
+    row = next(item.features for item in features if item.horse_id == horse.horse_id)
+
+    assert row["pedigree_sire_line"] == "SUNDAY_SILENCE"
+    assert row["pedigree_damsire_line"] == "MR_PROSPECTOR"
+    assert row["pedigree_style_bias_match"] is not None
+    assert row["pedigree_bias_sample_status"] == "SUFFICIENT"
+    assert "pedigree_style_bias_match" in row
 
 
 def test_track_condition_feeds_feature_generation():

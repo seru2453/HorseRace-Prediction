@@ -2,9 +2,23 @@ from services.common.models import HorseFeature, PredictionData
 from services.ml.baseline import (
     LogisticBaselineTrainer,
     TrainingConfig,
+    _race_rank_metrics,
     prediction_rows_from_current,
     temporal_race_split,
 )
+
+
+def test_logistic_evaluation_records_actual_top5_capture_rates():
+    rows = [
+        {"race_id": "r1", "actual_win": index == 0, "actual_top3": index < 3, "finish_position": index + 1}
+        for index in range(7)
+    ]
+    metrics = _race_rank_metrics(rows, [0.7, 0.1, 0.08, 0.06, 0.04, 0.015, 0.005], rows, [0.7, 0.1, 0.08, 0.06, 0.04, 0.015, 0.005])
+
+    assert metrics["top5_capture"] == 1.0
+    assert metrics["top5_capture_4of5_rate"] == 1.0
+    assert metrics["top5_capture_5of5_rate"] == 1.0
+    assert metrics["top5_complete_race_count"] == 1
 
 
 def test_logistic_baseline_reports_insufficient_data():

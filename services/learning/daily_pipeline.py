@@ -83,10 +83,18 @@ class DailyRacePipeline:
         review_statuses = [item["status"] for item in reviews]
         summary = {
             "schedule_count": len(schedule),
+            "expected_flat_races": sum(item.race_type == "flat" for item in schedule),
             "predicted": prediction_statuses.count("predicted"),
+            "predicted_races": prediction_statuses.count("predicted") + prediction_statuses.count("already_predicted"),
             "already_predicted": prediction_statuses.count("already_predicted"),
+            "missed_prediction_window": prediction_statuses.count("missed_prediction_window"),
+            "missed_prediction_races": prediction_statuses.count("missed_prediction_window"),
             "prediction_pending": sum(status in {"prediction_pending", "deferred"} for status in prediction_statuses),
             "reviewed": review_statuses.count("reviewed"),
+            "results_saved": sum(item.get("result_saved", False) for item in reviews),
+            "reviews_saved": sum(item.get("review_saved", False) for item in reviews),
+            "result_saved_races": sum(item.get("result_saved", False) for item in reviews),
+            "review_saved_races": sum(item.get("review_saved", False) for item in reviews),
             "result_pending": review_statuses.count("pending"),
             "errors": int(discovery_error is not None)
             + prediction_statuses.count("missed_prediction_window")

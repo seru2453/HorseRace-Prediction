@@ -39,6 +39,7 @@ from services.common.models import (
     UserPredictionInput,
 )
 from services.common.race_eligibility import is_supported_flat_race, prediction_lead_minutes, race_start_datetime
+from services.features.race_history import race_history_features
 from services.prediction.config import DEFAULT_STABILITY_CONFIG
 
 
@@ -115,9 +116,12 @@ class RaceRepository:
 
     def pedigree_condition_stats(self, race: RaceData, entries: list[RaceEntryData]) -> dict[str, dict]:
         target_date = str(race.race_date.value)
+        target_course = str(race.racecourse.value or "")
         target_surface = str(race.surface.value or "")
         target_band = self._distance_band(race.distance.value)
         buckets: dict[tuple[str, str], list[bool]] = {}
+        course_buckets: dict[tuple[str, str], list[bool]] = {}
+        course_baseline: list[bool] = []
         historical_rows = self.session.execute(
             select(Race, RaceResult.payload)
             .join(RaceResult, RaceResult.race_id == Race.race_id)
@@ -147,15 +151,24 @@ class RaceRepository:
                 finish = result_entry.get("finish_position") if result_entry else None
                 if finish is None:
                     continue
+                top3 = int(finish) <= 3
                 horse_payload = (historical_entry.payload or {}).get("horse") or {}
                 for relation in ("sire", "damsire"):
                     name = self._field_value(horse_payload, relation)
                     if name:
-                        buckets.setdefault((relation, str(name)), []).append(int(finish) <= 3)
+                        buckets.setdefault((relation, str(name)), []).append(top3)
+                        if historical_race.racecourse == target_course:
+                            course_buckets.setdefault((relation, str(name)), []).append(top3)
+                if historical_race.racecourse == target_course:
+                    course_baseline.append(top3)
 
         stats: dict[str, dict] = {}
+        baseline_rate = sum(course_baseline) / len(course_baseline) if course_baseline else None
         for entry in entries:
-            row: dict = {}
+            row: dict = {
+                "pedigree_condition_baseline_top3_rate": baseline_rate,
+                "pedigree_condition_baseline_starts": len(course_baseline),
+            }
             for relation in ("sire", "damsire"):
                 name = getattr(entry.horse, relation).value
                 samples = buckets.get((relation, str(name)), []) if name else []
@@ -164,8 +177,93 @@ class RaceRepository:
                 row[f"{relation}_condition_top3_rate"] = (
                     sum(1 for value in samples if value) / len(samples) if samples else None
                 )
+                prior_strength = DEFAULT_STABILITY_CONFIG.pedigree_shrinkage_strength
+                shrunk = (
+                    (sum(samples) + prior_strength * baseline_rate) / (len(samples) + prior_strength)
+                    if samples and baseline_rate is not None else None
+                )
+                row[f"{relation}_condition_shrunk_top3_rate"] = shrunk
+                row[f"{relation}_condition_shrunk_lift"] = shrunk - baseline_rate if shrunk is not None and baseline_rate is not None else None
+                course_samples = course_buckets.get((relation, str(name)), []) if name else []
+                course_shrunk = (
+                    (sum(course_samples) + prior_strength * baseline_rate) / (len(course_samples) + prior_strength)
+                    if course_samples and baseline_rate is not None else None
+                )
+                row[f"{relation}_line_course_sample_count"] = len(course_samples)
+                row[f"{relation}_line_course_shrunk_lift"] = (
+                    course_shrunk - baseline_rate
+                    if course_shrunk is not None and baseline_rate is not None else None
+                )
             stats[entry.horse.horse_id] = row
         return stats
+
+    def race_history_stats(self, race: RaceData, entries: list[RaceEntryData], lookback_years: int = 10) -> dict[str, dict]:
+        target_date = str(race.race_date.value)
+        try:
+            target = datetime.fromisoformat(target_date).date()
+        except (TypeError, ValueError):
+            return {}
+        try:
+            start = target.replace(year=target.year - max(1, lookback_years))
+        except ValueError:
+            start = target.replace(year=target.year - max(1, lookback_years), day=28)
+        historical_rows = self.session.execute(
+            select(Race, RaceResult.payload)
+            .join(RaceResult, RaceResult.race_id == Race.race_id)
+            .where(Race.race_date >= start.isoformat(), Race.race_date < target_date)
+            .order_by(Race.race_date)
+        ).all()
+        past_ids = {historical.race_id for historical, _ in historical_rows}
+        entries_by_race: dict[str, list[RaceEntry]] = {}
+        for historical_entry in self.session.scalars(select(RaceEntry).where(RaceEntry.race_id.in_(past_ids))).all() if past_ids else []:
+            entries_by_race.setdefault(historical_entry.race_id, []).append(historical_entry)
+        history = []
+        for historical, result_payload in historical_rows:
+            result_by_number = {
+                int(item["horse_number"]): item
+                for item in (result_payload or {}).get("entries", [])
+                if item.get("horse_number") is not None
+            }
+            historical_entries = []
+            for stored_entry in entries_by_race.get(historical.race_id, []):
+                result_entry = result_by_number.get(stored_entry.horse_number)
+                if result_entry is None:
+                    continue
+                payload = stored_entry.payload or {}
+                historical_entries.append({
+                    "frame_number": stored_entry.frame_number,
+                    "age": self._field_value(payload, "age"),
+                    "popularity": result_entry.get("popularity"),
+                    "finish_position": result_entry.get("finish_position"),
+                })
+            race_payload = historical.payload or {}
+            history.append({
+                "race_date": historical.race_date,
+                "race_name": self._field_value(race_payload, "race_name"),
+                "racecourse": historical.racecourse,
+                "surface": self._field_value(race_payload, "surface"),
+                "distance": self._field_value(race_payload, "distance"),
+                "grade": self._field_value(race_payload, "grade"),
+                "race_class": self._field_value(race_payload, "race_class"),
+                "entries": historical_entries,
+            })
+        target_race = {
+            "race_name": race.race_name.value,
+            "racecourse": race.racecourse.value,
+            "surface": race.surface.value,
+            "distance": race.distance.value,
+            "grade": race.grade.value,
+            "race_class": race.race_class.value,
+        }
+        target_entries = []
+        for entry in entries:
+            target_entries.append({
+                "horse_id": entry.horse.horse_id,
+                "frame_number": entry.frame_number.value,
+                "age": entry.age.value,
+                "popularity": entry.popularity.value,
+            })
+        return race_history_features(target_race, target_entries, history)
 
     def track_bias_stats(self, race: RaceData) -> dict:
         target_date = str(race.race_date.value)
@@ -195,6 +293,10 @@ class RaceRepository:
             for race_entry in candidate_entries:
                 grouped_candidates[race_entry.race_id][2].append(race_entry)
         weighted_positions: list[tuple[float, float]] = []
+        style_field_counts: dict[str, int] = {}
+        style_top3_counts: dict[str, int] = {}
+        style_known_count = 0
+        style_top3_known_count = 0
         same_day_index = 0
         race_samples = 0
         for historical_race, result_payload, race_entries in grouped_candidates.values():
@@ -217,9 +319,21 @@ class RaceRepository:
             used = False
             for result_entry in (result_payload or {}).get("entries", []):
                 finish = result_entry.get("finish_position")
+                horse_number = int(result_entry["horse_number"]) if result_entry.get("horse_number") is not None else None
+                stored_entry = entries_by_number.get(horse_number) if horse_number is not None else None
+                style = self._result_running_style(
+                    result_entry.get("corner_positions"),
+                    len(race_entries),
+                )
+                if style:
+                    style_known_count += 1
+                    style_field_counts[style] = style_field_counts.get(style, 0) + 1
+                    if finish is not None and int(finish) <= 3:
+                        style_top3_known_count += 1
+                        style_top3_counts[style] = style_top3_counts.get(style, 0) + 1
                 if finish is None or int(finish) > 3:
                     continue
-                entry = entries_by_number.get(int(result_entry["horse_number"]))
+                entry = stored_entry
                 frame = entry.frame_number if entry else None
                 if frame is None:
                     continue
@@ -229,8 +343,27 @@ class RaceRepository:
                 race_samples += 1
             if same_day_index >= 4 and historical_race.race_date < target_date:
                 break
+        style_scores = {}
+        for style, count in style_field_counts.items():
+            if not style_top3_known_count or not style_known_count:
+                style_scores[style] = None
+                continue
+            top3_share = style_top3_counts.get(style, 0) / style_top3_known_count
+            field_share = count / style_known_count
+            observed = top3_share - field_share
+            style_scores[style] = round(
+                observed * style_known_count / (style_known_count + DEFAULT_STABILITY_CONFIG.shrinkage_strength), 6
+            )
         if not weighted_positions:
-            return {"raw_bias": None, "sample_count": 0, "race_count": 0, "sample_status": "UNKNOWN"}
+            return {
+                "raw_bias": None,
+                "sample_count": 0,
+                "race_count": 0,
+                "sample_status": "UNKNOWN",
+                "style_bias_scores": style_scores,
+                "style_bias_sample_count": style_known_count,
+                "style_bias_sample_status": self._sample_status(style_known_count),
+            }
         total_weight = sum(weight for _, weight in weighted_positions)
         average_frame_ratio = sum(value * weight for value, weight in weighted_positions) / total_weight
         raw_bias = max(-0.03, min(0.03, (0.5 - average_frame_ratio) * 0.06))
@@ -239,7 +372,20 @@ class RaceRepository:
             "sample_count": len(weighted_positions),
             "race_count": race_samples,
             "sample_status": self._sample_status(race_samples),
+            "style_bias_scores": style_scores,
+            "style_bias_sample_count": style_known_count,
+            "style_bias_sample_status": self._sample_status(style_known_count),
         }
+
+    def _result_running_style(self, corner_positions: object, field_size: int) -> str | None:
+        if corner_positions in (None, "") or field_size <= 0:
+            return None
+        try:
+            first = int(str(corner_positions).split("-")[0])
+        except (TypeError, ValueError):
+            return None
+        ratio = first / field_size
+        return "front" if ratio <= 0.35 else "stalker" if ratio <= 0.6 else "closer"
 
     def _sample_status(self, count: int) -> str:
         if count <= 0:

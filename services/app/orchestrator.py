@@ -119,6 +119,7 @@ class RaceAnalysisService:
             timed("history_profiles", load_history_profiles)
             factor_adjustments = timed("factor_adjustments", repo.active_factor_adjustments)
             pedigree_stats = timed("pedigree_stats", lambda: repo.pedigree_condition_stats(race, entries))
+            race_history = timed("race_history", lambda: repo.race_history_stats(race, entries))
             track_bias = timed("track_bias", lambda: repo.track_bias_stats(race))
             qualitative_evidence = timed(
                 "qualitative_evidence",
@@ -138,6 +139,7 @@ class RaceAnalysisService:
                 histories,
                 aptitude_histories=aptitude_histories,
                 pedigree_stats=pedigree_stats,
+                race_history_stats=race_history,
                 track_bias=track_bias,
             ),
         )

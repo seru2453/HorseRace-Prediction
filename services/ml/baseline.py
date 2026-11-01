@@ -533,6 +533,11 @@ def _race_rank_metrics(
     predicted_finishes: list[float] = []
     actual_top3_count = 0
     recovered_top3 = 0
+    actual_top5_count = 0
+    recovered_top5 = 0
+    complete_top5_races = 0
+    top5_capture_4of5 = 0
+    top5_capture_5of5 = 0
     for rows, values, mode in (
         (win_rows, win_probabilities, "win"),
         (top3_rows, top3_probabilities, "top3"),
@@ -555,8 +560,24 @@ def _race_rank_metrics(
                 actual = {index for index in positions if bool(rows[index].get("actual_top3"))}
                 actual_top3_count += len(actual)
                 recovered_top3 += len(actual.intersection(ordered[:3]))
+                actual_top5 = {
+                    index for index in positions
+                    if rows[index].get("finish_position") is not None
+                    and int(rows[index]["finish_position"]) <= 5
+                }
+                if len(positions) >= 5 and len(actual_top5) == 5:
+                    complete_top5_races += 1
+                    captured = len(actual_top5.intersection(ordered[:5]))
+                    actual_top5_count += len(actual_top5)
+                    recovered_top5 += captured
+                    top5_capture_4of5 += int(captured >= 4)
+                    top5_capture_5of5 += int(captured == 5)
     return {
         "top3_recall": round(recovered_top3 / actual_top3_count, 6) if actual_top3_count else None,
+        "top5_capture": round(recovered_top5 / actual_top5_count, 6) if actual_top5_count else None,
+        "top5_capture_4of5_rate": round(top5_capture_4of5 / complete_top5_races, 6) if complete_top5_races else None,
+        "top5_capture_5of5_rate": round(top5_capture_5of5 / complete_top5_races, 6) if complete_top5_races else None,
+        "top5_complete_race_count": complete_top5_races,
         "winner_rank_mean": round(sum(winner_ranks) / len(winner_ranks), 6) if winner_ranks else None,
         "prediction_top3_mean_finish": (
             round(sum(predicted_finishes) / len(predicted_finishes), 6) if predicted_finishes else None
