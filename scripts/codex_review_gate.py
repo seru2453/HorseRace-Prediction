@@ -15,33 +15,38 @@ REVIEW_STATE_PATTERN = re.compile(r"<!-- codex-review-state:v1\s+(\{.*?\})\s*-->
 
 def evaluate_review_state(head_sha: str, comments: list[dict[str, Any]]) -> dict[str, str]:
     """Return passed, pending, or blocked; only an exact-head completed clean review passes."""
-    matching: list[tuple[str, dict[str, Any]]] = []
+    summaries: list[tuple[str, dict[str, Any]]] = []
     for comment in comments:
         if (comment.get("user") or {}).get("login") != CODEX_REVIEW_BOT:
             continue
         body = comment.get("body")
-        if not isinstance(body, str):
+        if not isinstance(body, str) or not (
+            "codex-pull-request-review-summary" in body or "codex-review-state:v1" in body
+        ):
             continue
         marker = REVIEW_STATE_PATTERN.search(body)
-        if marker is None:
-            continue
-        try:
-            state = json.loads(marker.group(1))
-        except json.JSONDecodeError:
-            continue
-        code_review = state.get("code_review") if isinstance(state, dict) else None
-        if not isinstance(code_review, dict) or code_review.get("commit_sha") != head_sha:
-            continue
         timestamp = str(comment.get("updated_at") or comment.get("created_at") or "")
-        matching.append((timestamp, code_review))
+        summaries.append((timestamp, {"body": body, "marker": marker}))
 
-    if not matching:
+    if not summaries:
         return {"status": "pending", "reason": "No Codex review summary exists for the current PR head."}
 
-    _, latest = max(matching, key=lambda item: item[0])
-    if latest.get("status") != "completed":
+    _, (_, latest_summary) = max(enumerate(summaries), key=lambda item: (item[1][0], item[0]))
+    marker = latest_summary["marker"]
+    if marker is None:
+        return {"status": "blocked", "reason": "The latest Codex review summary is malformed."}
+    try:
+        state = json.loads(marker.group(1))
+    except json.JSONDecodeError:
+        return {"status": "blocked", "reason": "The latest Codex review summary is malformed."}
+    code_review = state.get("code_review") if isinstance(state, dict) else None
+    if not isinstance(code_review, dict):
+        return {"status": "blocked", "reason": "The latest Codex review summary has unknown review state."}
+    if code_review.get("commit_sha") != head_sha:
+        return {"status": "pending", "reason": "The latest Codex review summary is for a different PR head."}
+    if code_review.get("status") != "completed":
         return {"status": "pending", "reason": "Codex review for the current PR head is not completed."}
-    if latest.get("has_unresolved_findings") is not False:
+    if code_review.get("has_unresolved_findings") is not False:
         return {"status": "blocked", "reason": "Codex review has unresolved or unknown findings."}
     return {"status": "passed", "reason": "Codex review completed for the current PR head with zero unresolved findings."}
 

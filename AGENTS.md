@@ -24,4 +24,4 @@
 - A review is eligible only when the `chatgpt-codex-connector[bot]` summary contains a `code_review` state with `status: "completed"`, an exact matching `commit_sha`, and `has_unresolved_findings: false`.
 - Treat a missing, stale, malformed, unknown, or unavailable review state as a failed gate. Leave auto-merge disabled.
 - If unresolved findings exist, fix them, push a new commit, and wait for a clean review of that new SHA. Never reuse review approval from an earlier commit.
-- Require both GitHub Actions checks `check` and `codex-review` on `main`; only then enable auto-merge. Do not bypass failed or pending checks.
+- Require both GitHub Actions checks `check` and `codex-review` on `main`; `codex-review` must be published against the exact PR head SHA. Only then enable auto-merge. Do not bypass failed or pending checks.

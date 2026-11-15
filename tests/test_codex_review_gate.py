@@ -48,3 +48,16 @@ def test_review_gate_blocks_unresolved_unknown_and_newer_findings():
     earlier_clean = _comment("abc123", timestamp="2026-11-15T00:00:00Z")
     newer_unresolved = _comment("abc123", unresolved=True, timestamp="2026-11-15T00:01:00Z")
     assert evaluate_review_state("abc123", [earlier_clean, newer_unresolved])["status"] == "blocked"
+
+
+def test_review_gate_does_not_fall_back_to_an_older_clean_summary():
+    earlier_clean = _comment("abc123", timestamp="2026-11-15T00:00:00Z")
+    newer_malformed = {
+        "user": {"login": CODEX_REVIEW_BOT},
+        "created_at": "2026-11-15T00:01:00Z",
+        "body": "<!-- codex-pull-request-review-summary --><!-- codex-review-state:v1 {invalid} -->",
+    }
+    newer_stale = _comment("old-sha", timestamp="2026-11-15T00:02:00Z")
+
+    assert evaluate_review_state("abc123", [earlier_clean, newer_malformed])["status"] == "blocked"
+    assert evaluate_review_state("abc123", [earlier_clean, newer_stale])["status"] == "pending"
