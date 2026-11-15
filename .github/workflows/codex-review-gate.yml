@@ -1,0 +1,117 @@
+name: Codex review gate
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  checks: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  evaluate-codex-review:
+    name: Evaluate Codex review state
+    if: github.event_name == 'issue_comment' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Check out trusted default-branch evaluator
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Evaluate and publish result for the exact PR head
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execFileSync } = require('child_process');
+            const pullNumber = context.eventName === 'issue_comment'
+              ? context.issue.number
+              : context.payload.workflow_run.pull_requests[0]?.number;
+
+            if (!pullNumber) {
+              core.info('Workflow run is not associated with a pull request.');
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull = (await github.rest.pulls.get({ owner, repo, pull_number: pullNumber })).data;
+            const expectedHeadSha = pull.head.sha;
+            const check = (await github.rest.checks.create({
+              owner,
+              repo,
+              name: 'codex-review',
+              head_sha: expectedHeadSha,
+              status: 'in_progress',
+              output: {
+                title: 'Waiting for Codex review',
+                summary: `Checking Codex review for PR #${pullNumber} at ${expectedHeadSha}.`,
+              },
+            })).data;
+
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+            let conclusion = 'failure';
+            let title = 'Codex review did not pass';
+            let summary = 'Review state could not be verified.';
+
+            try {
+              if (pull.draft) throw new Error('Mark the PR ready for review before the Codex review gate can pass.');
+
+              for (let attempt = 0; attempt < 120; attempt += 1) {
+                const currentPull = (await github.rest.pulls.get({ owner, repo, pull_number: pullNumber })).data;
+                if (currentPull.head.sha !== expectedHeadSha) {
+                  throw new Error('PR head changed while waiting; the new commit requires a new review gate run.');
+                }
+
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100,
+                });
+                const result = JSON.parse(execFileSync(
+                  'python3',
+                  ['scripts/codex_review_gate.py', '--head-sha', expectedHeadSha],
+                  { input: JSON.stringify(comments), encoding: 'utf8' },
+                ));
+
+                if (result.status === 'passed') {
+                  conclusion = 'success';
+                  title = 'Codex review passed';
+                  summary = result.reason;
+                  break;
+                }
+                if (result.status === 'blocked') throw new Error(result.reason);
+
+                summary = result.reason;
+                core.info(`${result.reason} Waiting for Codex review (${attempt + 1}/120).`);
+                if (attempt < 119) await sleep(30000);
+              }
+
+              if (conclusion !== 'success') {
+                throw new Error('Timed out waiting for a completed Codex review of the current PR head.');
+              }
+            } catch (error) {
+              summary = error.message || String(error);
+              core.setFailed(summary);
+            } finally {
+              await github.rest.checks.update({
+                owner,
+                repo,
+                check_run_id: check.id,
+                status: 'completed',
+                conclusion,
+                output: { title, summary },
+              });
+            }
