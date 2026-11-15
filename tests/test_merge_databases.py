@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import hashlib
 import sqlite3
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -17,7 +18,7 @@ from database.models import (
 )
 from database.repository import RaceRepository
 from database.session import Base
-from scripts.merge_databases import _review_exclusion_report, merge_databases
+from scripts.merge_databases import MergeError, _review_exclusion_report, main, merge_databases
 
 
 def _database(
@@ -29,6 +30,7 @@ def _database(
     feature_version="mvp-feature-v32",
     prediction_timestamp=None,
     raw_features=None,
+    id_offset=0,
 ):
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
@@ -45,7 +47,7 @@ def _database(
         session.add(Horse(horse_id=horse_id, horse_name=horse_name, payload={"horse_id": horse_id}))
         session.add(
             PredictionSnapshot(
-                id=1,
+                id=1 + id_offset,
                 race_id=race_id,
                 horse_id=horse_id,
                 horse_number=1,
@@ -61,10 +63,10 @@ def _database(
             )
         )
         session.flush()
-        session.add(PredictionMetric(prediction_snapshot_id=1, base_score=0.5))
+        session.add(PredictionMetric(prediction_snapshot_id=1 + id_offset, base_score=0.5))
         session.add(
             ChallengerPrediction(
-                prediction_snapshot_id=1,
+                prediction_snapshot_id=1 + id_offset,
                 model_version="challenger",
                 feature_version="mvp-feature-v32",
                 target="actual_win",
@@ -75,7 +77,7 @@ def _database(
         trained_at = datetime(2026, 8, 16, tzinfo=timezone.utc)
         session.add(
             TrainingRun(
-                id=1,
+                id=1 + id_offset,
                 model_version=model_version,
                 trained_at=trained_at,
                 status="completed",
@@ -86,19 +88,19 @@ def _database(
         )
         session.add(
             ModelEvaluation(
-                id=1,
+                id=1 + id_offset,
                 model_version=model_version,
                 evaluation_period="2026-08-15..2026-08-15",
                 sample_count=1,
                 race_count=1,
                 horse_count=1,
-                training_run_id=1,
+                training_run_id=1 + id_offset,
                 metrics_json={},
             )
         )
         session.add(
             PredictionReview(
-                id=1,
+                id=1 + id_offset,
                 race_id=race_id,
                 payload={"rows": [{"horse_number": 1, "actual_win": 1.0, "finish_position": 1}]},
                 created_at=datetime(2026, 8, 15, 2, 0),
@@ -127,6 +129,10 @@ def test_merge_remaps_surrogate_keys_and_keeps_foreign_keys_and_snapshots(tmp_pa
     assert report["merged_integrity"]["foreign_key_violations"] == []
     assert report["duplicate_natural_keys"] == {}
     assert report["duplicate_summary"]["post_merge_duplicate_natural_keys"] == 0
+    assert report["table_actions"]["primary"]["races"]["inserted"] == 1
+    assert report["table_actions"]["secondary"]["races"]["inserted"] == 1
+    assert report["table_actions"]["secondary"]["prediction_snapshots"]["remapped_primary_key"] == 1
+    assert report["duplicate_summary"]["surrogate_primary_keys_remapped"] >= 1
     assert len(report["backups"]) == 2
     assert (_digest(primary), _digest(secondary)) == source_hashes
     with sqlite3.connect(output) as connection:
@@ -185,6 +191,103 @@ def test_merge_refuses_to_overwrite_output(tmp_path):
     else:
         raise AssertionError("merge should refuse to overwrite an existing output")
     assert output.read_bytes() == b"keep existing output"
+
+
+def test_report_path_cannot_overwrite_source_or_output_database(tmp_path, capsys):
+    primary = tmp_path / "primary.sqlite3"
+    secondary = tmp_path / "secondary.sqlite3"
+    output = tmp_path / "merged.sqlite3"
+    _database(primary, "race-a", "horse-a", "Primary")
+    _database(secondary, "race-b", "horse-b", "Secondary")
+    source_hashes = (_digest(primary), _digest(secondary))
+
+    exit_code = main(
+        [
+            "--primary", str(primary),
+            "--secondary", str(secondary),
+            "--output", str(output),
+            "--dry-run",
+            "--report", str(primary),
+        ]
+    )
+    assert exit_code == 1
+    assert "Report path must not overwrite a protected database" in capsys.readouterr().err
+    assert (_digest(primary), _digest(secondary)) == source_hashes
+    assert not output.exists()
+
+    _database(output, "race-c", "horse-c", "Existing output")
+    output_hash = _digest(output)
+    with pytest.raises(FileExistsError, match="Refusing to overwrite existing output database"):
+        merge_databases(primary, secondary, output, report_path=output)
+    assert _digest(output) == output_hash
+    assert (_digest(primary), _digest(secondary)) == source_hashes
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    protected_backup = backup_dir / "primary.sqlite3"
+    protected_backup.write_bytes(primary.read_bytes())
+    backup_hash = _digest(protected_backup)
+    with pytest.raises(MergeError, match="Report path must not overwrite a protected database"):
+        merge_databases(
+            primary,
+            secondary,
+            tmp_path / "other-merged.sqlite3",
+            backup_dir,
+            dry_run=True,
+            report_path=protected_backup,
+        )
+    assert _digest(protected_backup) == backup_hash
+
+
+def test_unmapped_surrogate_foreign_key_is_reported_and_skipped(tmp_path):
+    primary = tmp_path / "primary.sqlite3"
+    secondary = tmp_path / "secondary.sqlite3"
+    output = tmp_path / "merged.sqlite3"
+    _database(primary, "race-a", "horse-a", "Primary", model_version="primary-model")
+    _database(secondary, "race-b", "horse-b", "Secondary", model_version="secondary-model")
+    with sqlite3.connect(secondary) as connection:
+        connection.execute("DELETE FROM training_runs WHERE id=1")
+
+    report = merge_databases(primary, secondary, output, tmp_path / "backups")
+
+    skipped = [
+        row for row in report["orphan_rows"]
+        if row["source"] == "secondary" and row["table"] == "model_evaluations"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0]["reason"] == "unmapped_surrogate_parent"
+    assert report["table_actions"]["secondary"]["model_evaluations"]["skipped_orphan"] == 1
+    with sqlite3.connect(output) as connection:
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("SELECT training_run_id FROM model_evaluations").fetchall() == [(1,)]
+
+
+def test_table_action_counts_accumulate_for_multiple_source_rows(tmp_path):
+    primary = tmp_path / "primary.sqlite3"
+    secondary = tmp_path / "secondary.sqlite3"
+    output = tmp_path / "merged.sqlite3"
+    _database(primary, "race-a", "horse-a", "Primary", model_version="primary-model")
+    _database(secondary, "race-b", "horse-b", "Secondary 1", model_version="secondary-1")
+    _database(
+        secondary,
+        "race-c",
+        "horse-c",
+        "Secondary 2",
+        model_version="secondary-2",
+        id_offset=1,
+    )
+
+    report = merge_databases(primary, secondary, output, tmp_path / "backups")
+    actions = report["table_actions"]["secondary"]
+
+    assert actions["races"]["inserted"] == 2
+    assert actions["horses"]["inserted"] == 2
+    assert actions["prediction_snapshots"]["remapped_primary_key"] == 2
+    assert report["duplicate_summary"]["surrogate_primary_keys_remapped"] == sum(
+        counts.get("remapped_primary_key", 0)
+        for tables in report["table_actions"].values()
+        for counts in tables.values()
+    )
 
 
 def test_merge_report_excludes_post_start_predictions_without_rewriting_snapshots(tmp_path):

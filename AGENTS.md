@@ -17,3 +17,11 @@
 - Tests are required for parser validation, prediction bounds, simulation reproducibility, and leakage prevention.
 - Do not rewrite saved prediction-time snapshots after results become available.
 - Keep progress updates and final reports concise; report only verified behavior as confirmed.
+
+## PR auto-merge safety gate
+
+- Never enable auto-merge immediately after CI passes. First verify the latest PR head SHA and a Codex Review Summary for that exact SHA.
+- A review is eligible only when the `chatgpt-codex-connector[bot]` summary contains a `code_review` state with `status: "completed"`, an exact matching `commit_sha`, and `has_unresolved_findings: false`.
+- Treat a missing, stale, malformed, unknown, or unavailable review state as a failed gate. Leave auto-merge disabled.
+- If unresolved findings exist, fix them, push a new commit, and wait for a clean review of that new SHA. Never reuse review approval from an earlier commit.
+- Require both GitHub Actions checks `check` and `codex-review` on `main`; only then enable auto-merge. Do not bypass failed or pending checks.

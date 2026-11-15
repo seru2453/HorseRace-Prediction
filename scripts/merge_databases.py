@@ -249,6 +249,23 @@ def _foreign_keys(connection: sqlite3.Connection, table: str) -> list[dict[str, 
     return [dict(row) for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')]
 
 
+def _record_action(report: dict[str, Any], source_label: str, table: str, action: str) -> None:
+    counts = report["table_actions"][source_label][table]
+    counts[action] = counts.get(action, 0) + 1
+
+
+def _validate_report_path(
+    report_path: Path | None,
+    protected_paths: list[Path],
+) -> None:
+    if report_path is None:
+        return
+    resolved_report = report_path.expanduser().resolve()
+    for protected in protected_paths:
+        if resolved_report == protected.expanduser().resolve():
+            raise MergeError(f"Report path must not overwrite a protected database: {resolved_report}")
+
+
 def _source_pk_maps(connection: sqlite3.Connection, order: list[str]) -> dict[str, dict[Any, Any]]:
     return {table: {} for table in order}
 
@@ -262,6 +279,11 @@ def _insert_source(
 ) -> None:
     maps = _source_pk_maps(source, order)
     target_tables = set(_table_names(target))
+    target_pk_columns = {name: _primary_key(target, name) for name in target_tables}
+    target_column_types = {
+        name: {row[1]: str(row[2]).upper() for row in target.execute(f'PRAGMA table_info("{name}")')}
+        for name in target_tables
+    }
     for table in order:
         if table not in target_tables:
             continue
@@ -308,9 +330,25 @@ def _insert_source(
                 parent_table = fk["table"]
                 parent_column = fk["to"]
                 original = values.get(child_column)
-                parent_pk = _primary_key(target, parent_table) if parent_table in target_tables else ()
-                if original is not None and parent_table in maps and len(parent_pk) == 1 and parent_column == parent_pk[0]:
-                    values[child_column] = maps[parent_table].get(original, original)
+                parent_pk = target_pk_columns.get(parent_table, ())
+                is_surrogate_parent = (
+                    len(parent_pk) == 1
+                    and parent_column == parent_pk[0]
+                    and target_column_types.get(parent_table, {}).get(parent_column) == "INTEGER"
+                )
+                if original is not None and is_surrogate_parent:
+                    parent_map = maps.get(parent_table, {})
+                    if original not in parent_map:
+                        orphan = {
+                            "source": source_label,
+                            "table": table,
+                            "row_key": {name: source_row[name] for name in pk},
+                            "foreign_key": f"{child_column}->{parent_table}.{parent_column}",
+                            "value": original,
+                            "reason": "unmapped_surrogate_parent",
+                        }
+                        break
+                    values[child_column] = parent_map[original]
                 if values.get(child_column) is not None:
                     parent = _find_row(target, parent_table, (parent_column,), {parent_column: values[child_column]})
                     if parent is None:
@@ -320,11 +358,12 @@ def _insert_source(
                             "row_key": {name: source_row[name] for name in pk},
                             "foreign_key": f"{child_column}->{parent_table}.{parent_column}",
                             "value": original,
+                            "reason": "missing_parent",
                         }
                         break
             if orphan:
                 report["orphan_rows"].append(orphan)
-                report["table_actions"][source_label][table].update({"skipped_orphan": 1})
+                _record_action(report, source_label, table, "skipped_orphan")
                 continue
 
             existing = None
@@ -339,7 +378,7 @@ def _insert_source(
                 if pk:
                     maps[table][source_row[pk[0]]] = existing[pk[0]]
                 action = "deduplicated_equal" if not _differs(existing, values, pk) else "kept_primary_conflict"
-                report["table_actions"][source_label][table].update({action: 1})
+                _record_action(report, source_label, table, action)
                 if action == "kept_primary_conflict":
                     report["conflicts"].append(
                         {
@@ -357,7 +396,7 @@ def _insert_source(
                 if collision is not None:
                     maximum_id += 1
                     values[pk[0]] = maximum_id
-                    report["table_actions"][source_label][table].update({"remapped_primary_key": 1})
+                    _record_action(report, source_label, table, "remapped_primary_key")
 
             try:
                 target.execute(
@@ -369,7 +408,7 @@ def _insert_source(
 
             if pk:
                 maps[table][source_row[pk[0]]] = values.get(pk[0], source_row[pk[0]])
-            report["table_actions"][source_label][table].update({"inserted": 1})
+            _record_action(report, source_label, table, "inserted")
 
 
 def _dataset_summary(path: Path) -> dict[str, Any]:
@@ -664,6 +703,7 @@ def merge_databases(
     output_path: Path,
     backup_dir: Path | None = None,
     dry_run: bool = False,
+    report_path: Path | None = None,
 ) -> dict[str, Any]:
     primary_path = primary_path.expanduser().resolve()
     secondary_path = secondary_path.expanduser().resolve()
@@ -675,16 +715,25 @@ def merge_databases(
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output database: {output_path}")
 
+    if backup_dir is None:
+        backup_dir = output_path.parent / "backups" / "issue38"
+    protected_paths = [primary_path, secondary_path, output_path]
+    if backup_dir is not None and backup_dir.exists():
+        protected_paths.extend(backup_dir.rglob("*.sqlite3"))
+    _validate_report_path(report_path, protected_paths)
+
     backup_records = []
     primary_snapshot = primary_path
     secondary_snapshot = secondary_path
     if not dry_run:
-        if backup_dir is None:
-            backup_dir = output_path.parent / "backups" / "issue38"
         backup_records = [
             _online_backup(primary_path, backup_dir, "primary"),
             _online_backup(secondary_path, backup_dir, "secondary"),
         ]
+        backup_paths = [Path(item["path"]).expanduser().resolve() for item in backup_records]
+        if output_path in backup_paths:
+            raise MergeError(f"Output path must not overwrite a protected backup database: {output_path}")
+        _validate_report_path(report_path, [*protected_paths, *backup_paths])
         primary_snapshot = Path(backup_records[0]["path"])
         secondary_snapshot = Path(backup_records[1]["path"])
 
@@ -830,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             backup_dir=args.backup_dir,
             dry_run=args.dry_run,
+            report_path=args.report,
         )
     except (FileNotFoundError, FileExistsError, MergeError, sqlite3.Error, OSError) as error:
         print(f"Database merge failed: {error}", file=sys.stderr)
